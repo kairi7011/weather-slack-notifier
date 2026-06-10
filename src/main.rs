@@ -164,11 +164,15 @@ impl Config {
 
     fn from_args(args: &CliOptions) -> Result<Self, Box<dyn Error>> {
         let slack_bot_token = Self::env_var("SLACK_BOT_TOKEN").ok_or_else(|| {
-            AppError("SLACK_BOT_TOKEN is required (environment variable)".to_string()) as Box<dyn Error>
+            Box::new(AppError(
+                "SLACK_BOT_TOKEN is required (environment variable)".to_string(),
+            ))
         })?;
 
         let slack_channel_id = Self::env_var("SLACK_CHANNEL_ID").ok_or_else(|| {
-            AppError("SLACK_CHANNEL_ID is required (environment variable)".to_string()) as Box<dyn Error>
+            Box::new(AppError(
+                "SLACK_CHANNEL_ID is required (environment variable)".to_string(),
+            ))
         })?;
 
         let weather_lat = args
@@ -176,7 +180,7 @@ impl Config {
             .clone()
             .or_else(|| Self::env_var("WEATHER_LAT"))
             .ok_or_else(|| {
-                AppError("WEATHER_LAT is required (env or --lat)".to_string()) as Box<dyn Error>
+                Box::new(AppError("WEATHER_LAT is required (env or --lat)".to_string()))
             })?;
 
         let weather_lon = args
@@ -184,7 +188,7 @@ impl Config {
             .clone()
             .or_else(|| Self::env_var("WEATHER_LON"))
             .ok_or_else(|| {
-                AppError("WEATHER_LON is required (env or --lon)".to_string()) as Box<dyn Error>
+                Box::new(AppError("WEATHER_LON is required (env or --lon)".to_string()))
             })?;
 
         validate_coordinate(&weather_lat, "WEATHER_LAT", -90.0, 90.0)?;
