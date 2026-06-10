@@ -2,7 +2,8 @@ name: weather-forecast-to-slack
 
 on:
   schedule:
-    - cron: "0 23 * * *" # 08:00 JST (UTC+9)
+    # 08:00 JST
+    - cron: "0 23 * * *"
   workflow_dispatch:
 
 jobs:
@@ -22,9 +23,12 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
-          WEATHER_LAT: ${{ vars.WEATHER_LAT }}
-          WEATHER_LON: ${{ vars.WEATHER_LON }}
           WEATHER_NAME: ${{ vars.WEATHER_NAME }}
-          WEATHER_API_URL: ${{ vars.WEATHER_API_URL }}
+          WEATHER_TIMEZONE: ${{ vars.WEATHER_TIMEZONE }}
         run: |
-          cargo run --release
+          cargo run --release -- \
+            --lat "${{ vars.WEATHER_LAT }}" \
+            --lon "${{ vars.WEATHER_LON }}" \
+            --api-url "${{ vars.WEATHER_API_URL }}" \
+            --name "${WEATHER_NAME}" \
+            --timezone "${WEATHER_TIMEZONE}"

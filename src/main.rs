@@ -1,10 +1,11 @@
 use chrono::{Datelike, Utc};
-use chrono_tz::Asia::Tokyo;
+use chrono_tz::{Asia::Tokyo, Tz};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 #[derive(Debug)]
 struct AppError(String);
@@ -25,6 +26,8 @@ struct Config {
     weather_lat: String,
     weather_lon: String,
     weather_name: String,
+    timezone: String,
+    weekday_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -64,64 +67,173 @@ struct TodayWeather {
     is_too_wet: bool,
 }
 
+#[derive(Default)]
+struct CliOptions {
+    bot_token: Option<String>,
+    channel_id: Option<String>,
+    lat: Option<String>,
+    lon: Option<String>,
+    name: Option<String>,
+    api_url: Option<String>,
+    timezone: Option<String>,
+    skip_weekday_check: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::from_env()?;
+    let args = CliOptions::from_args();
+    let config = Config::from_args(&args)?;
 
-    if !is_weekday_jst() {
+    if config.weekday_only && !is_weekday_in_timezone(&config.timezone) {
         return Ok(());
     }
 
     let client = Client::new();
-    let today = fetch_weather(&client, &config).await?;
-    let message = compose_message(&config.weather_name, today);
+    let weather = fetch_weather(&client, &config).await?;
+    let message = compose_message(&config.weather_name, weather);
     post_to_slack(&client, &config, &message).await?;
 
     Ok(())
 }
 
-fn is_weekday_jst() -> bool {
-    let now = Utc::now().with_timezone(&Tokyo);
+impl CliOptions {
+    fn from_args() -> Self {
+        let mut raw = env::args().skip(1);
+        let mut result = CliOptions::default();
+
+        while let Some(arg) = raw.next() {
+            match arg.as_str() {
+                "--bot-token" | "--token" | "--slack-bot-token" => {
+                    result.bot_token = raw.next();
+                }
+                "--channel-id" | "--channel" => {
+                    result.channel_id = raw.next();
+                }
+                "--lat" => {
+                    result.lat = raw.next();
+                }
+                "--lon" => {
+                    result.lon = raw.next();
+                }
+                "--name" => {
+                    result.name = raw.next();
+                }
+                "--api-url" => {
+                    result.api_url = raw.next();
+                }
+                "--timezone" => {
+                    result.timezone = raw.next();
+                }
+                "--skip-weekday-check" => {
+                    result.skip_weekday_check = true;
+                }
+                "--weekday-only" => {
+                    result.skip_weekday_check = false;
+                }
+                s if s.starts_with("--lat=") => {
+                    result.lat = Some(s.trim_start_matches("--lat=").to_string());
+                }
+                s if s.starts_with("--lon=") => {
+                    result.lon = Some(s.trim_start_matches("--lon=").to_string());
+                }
+                s if s.starts_with("--name=") => {
+                    result.name = Some(s.trim_start_matches("--name=").to_string());
+                }
+                s if s.starts_with("--api-url=") => {
+                    result.api_url = Some(s.trim_start_matches("--api-url=").to_string());
+                }
+                s if s.starts_with("--timezone=") => {
+                    result.timezone = Some(s.trim_start_matches("--timezone=").to_string());
+                }
+                _ => {}
+            }
+        }
+
+        result
+    }
+}
+
+impl Config {
+    fn env_var(name: &str) -> Option<String> {
+        env::var(name).ok()
+    }
+
+    fn from_args(args: &CliOptions) -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            slack_bot_token: args
+                .bot_token
+                .clone()
+                .or_else(|| Self::env_var("SLACK_BOT_TOKEN"))
+                .ok_or_else(|| {
+                    Box::new(AppError(
+                        "SLACK_BOT_TOKEN is required (env or --bot-token)".to_string(),
+                    )) as Box<dyn Error>
+                })?,
+            slack_channel_id: args
+                .channel_id
+                .clone()
+                .or_else(|| Self::env_var("SLACK_CHANNEL_ID"))
+                .ok_or_else(|| {
+                    Box::new(AppError(
+                        "SLACK_CHANNEL_ID is required (env or --channel-id)".to_string(),
+                    )) as Box<dyn Error>
+                })?,
+            weather_lat: args
+                .lat
+                .clone()
+                .or_else(|| Self::env_var("WEATHER_LAT"))
+                .unwrap_or_else(|| "35.6895".to_string()),
+            weather_lon: args
+                .lon
+                .clone()
+                .or_else(|| Self::env_var("WEATHER_LON"))
+                .unwrap_or_else(|| "139.6917".to_string()),
+            weather_name: args
+                .name
+                .clone()
+                .or_else(|| Self::env_var("WEATHER_NAME"))
+                .unwrap_or_else(|| "\u897f\u65b0\u5bbf".to_string()),
+            weather_url: args
+                .api_url
+                .clone()
+                .or_else(|| Self::env_var("WEATHER_API_URL"))
+                .unwrap_or_else(|| "https://api.open-meteo.com/v1/forecast".to_string()),
+            timezone: args
+                .timezone
+                .clone()
+                .or_else(|| Self::env_var("WEATHER_TIMEZONE"))
+                .unwrap_or_else(|| "Asia/Tokyo".to_string()),
+            weekday_only: !args.skip_weekday_check,
+        })
+    }
+}
+
+fn is_weekday_in_timezone(timezone: &str) -> bool {
+    let tz = Tz::from_str(timezone).unwrap_or(Tokyo);
+    let now = Utc::now().with_timezone(&tz);
     let weekday = now.weekday().number_from_monday();
     (1..=5).contains(&weekday)
 }
 
-impl Config {
-    fn get_env(name: &str) -> Result<String, Box<dyn Error>> {
-        env::var(name).map_err(|_| {
-            Box::new(AppError(format!(
-                "environment variable `{}` is required",
-                name
-            ))) as Box<dyn Error>
-        })
-    }
-
-    fn from_env() -> Result<Self, Box<dyn Error>> {
-        Ok(Self {
-            slack_bot_token: Self::get_env("SLACK_BOT_TOKEN")?,
-            slack_channel_id: Self::get_env("SLACK_CHANNEL_ID")?,
-            weather_lat: env::var("WEATHER_LAT").unwrap_or_else(|_| "35.6895".to_string()),
-            weather_lon: env::var("WEATHER_LON").unwrap_or_else(|_| "139.6917".to_string()),
-            weather_name: env::var("WEATHER_NAME").unwrap_or_else(|_| "今日の天気".to_string()),
-            weather_url: env::var("WEATHER_API_URL")
-                .unwrap_or_else(|_| "https://api.open-meteo.com/v1/forecast".to_string()),
-        })
-    }
-}
-
 async fn fetch_weather(client: &Client, config: &Config) -> Result<TodayWeather, Box<dyn Error>> {
+    let tz = Tz::from_str(&config.timezone).unwrap_or(Tokyo);
+    let today = Utc::now()
+        .with_timezone(&tz)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+
     let url = format!(
-        "{base}?latitude={lat}&longitude={lon}&daily=weathercode,precipitation_sum,precipitation_probability_max&timezone=Asia%2FTokyo&forecast_days=2",
+        "{base}?latitude={lat}&longitude={lon}&daily=weathercode,precipitation_sum,precipitation_probability_max&timezone={tz}&forecast_days=2",
         base = config.weather_url,
         lat = config.weather_lat,
-        lon = config.weather_lon
+        lon = config.weather_lon,
+        tz = config.timezone
     );
 
     let resp = client.get(url).send().await?;
     let resp = resp.error_for_status()?;
     let body: WeatherResponse = resp.json().await?;
-    let today = Utc::now().with_timezone(&Tokyo).date_naive();
-    let today = today.format("%Y-%m-%d").to_string();
 
     let idx = body
         .daily
@@ -133,12 +245,7 @@ async fn fetch_weather(client: &Client, config: &Config) -> Result<TodayWeather,
             Box::new(AppError("weather forecast does not have any daily data".to_string())) as Box<dyn Error>
         })?;
 
-    let code = body
-        .daily
-        .weather_code
-        .get(idx)
-        .copied()
-        .unwrap_or(0);
+    let code = body.daily.weather_code.get(idx).copied().unwrap_or(0);
     let precipitation_sum = body.daily.precipitation_sum.get(idx).and_then(|v| *v).unwrap_or(0.0);
     let precipitation_probability = body
         .daily
@@ -148,12 +255,14 @@ async fn fetch_weather(client: &Client, config: &Config) -> Result<TodayWeather,
         .unwrap_or(0.0);
 
     let weather_tone = classify_tone(code);
-    let is_too_wet = matches!(weather_tone, WeatherTone::HeavyRain)
-        || precipitation_sum >= 12.0
+    let is_too_wet = precipitation_sum >= 12.0
         || precipitation_probability >= 70.0
-        || matches!(code, 65 | 82 | 95 | 96 | 99);
+        || matches!(code, 61 | 63 | 65 | 66 | 67 | 80 | 81 | 82 | 95 | 96 | 99);
 
-    Ok(TodayWeather { code, is_too_wet })
+    Ok(TodayWeather {
+        code,
+        is_too_wet,
+    })
 }
 
 fn classify_tone(code: u16) -> WeatherTone {
@@ -176,30 +285,30 @@ fn classify_tone(code: u16) -> WeatherTone {
 fn compose_message(location_name: &str, forecast: TodayWeather) -> String {
     let tone = classify_tone(forecast.code);
     let body = match tone {
-        WeatherTone::Sunny => "晴れです".to_string(),
-        WeatherTone::Cloudy => "曇りです".to_string(),
-        WeatherTone::Snow => "雪です".to_string(),
+        WeatherTone::Sunny => "\u6674\u308c\u3067\u3059".to_string(),
+        WeatherTone::Cloudy => "\u66ec\u308a\u3077\u308c\u3067\u3059".to_string(),
+        WeatherTone::Snow => "\u96ea\u3067\u3059".to_string(),
         WeatherTone::Rain => {
             if forecast.is_too_wet {
-                "滝が降ります".to_string()
+                "\u6d6a\u304c\u964d\u308a\u307e\u3059".to_string()
             } else {
-                "雨です".to_string()
+                "\u96e8\u3067\u3059".to_string()
             }
         }
-        WeatherTone::Other => "天候が分かりません".to_string(),
+        WeatherTone::Other => "\u5929\u5019\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093".to_string(),
     };
 
     let mut message = format!("{location_name}: {body}");
 
-    match tone {
-        WeatherTone::Rain => {
-            if forecast.is_too_wet {
-                message = "@here 滝が降ります、傘を持っていきましょう\n出来ればリモートしましょう".to_string();
-            } else {
-                message = "@here 雨です、傘を持っていきましょう".to_string();
-            }
+    if let WeatherTone::Rain = tone {
+        if forecast.is_too_wet {
+            message =
+                "@here \u6d6a\u304c\u964d\u308a\u307e\u3059\u3001\u96f0\u3092\u6301\u3063\u3066\u304d\u307e\u3057\u3087\u3046\n\u51fa\u6765\u308c\u3070\u30ea\u30e2\u30fc\u30c8\u3057\u307e\u3057\u3087\u3046"
+                    .to_string();
+        } else {
+            message =
+                "@here \u96e8\u3067\u3059\u3001\u96f0\u3092\u6301\u3063\u3066\u304d\u307e\u3057\u3087\u3046".to_string();
         }
-        _ => {}
     }
 
     message
@@ -218,7 +327,6 @@ async fn post_to_slack(client: &Client, config: &Config, text: &str) -> Result<(
 
     let response = response.error_for_status()?;
     let body: SlackResponse = response.json().await?;
-
     if body.ok {
         return Ok(());
     }
