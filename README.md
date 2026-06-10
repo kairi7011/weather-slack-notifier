@@ -1,48 +1,63 @@
-# Weather Slack Notifier (GitHub Actions)
+# Weather Slack Notifier
 
-## 概要
+A small GitHub Actions job in Rust that posts the daily weather forecast to Slack at 08:00 Asia/Tokyo.
 
-Open-Meteo の1日天気予報を取得して、平日のみ Slack に投稿する Rust 製ジョブです。
-週末・祝日は投稿しません（平日チェックはデフォルトON）。
+- sunny -> `晴れです`
+- cloudy -> `曇りです`
+- rain -> `<!here> 雨です、傘を持っていきましょう`
+- heavy rain -> `<!here> 滝が降ります、傘を持っていきましょう。\n出来ればリモートしましょう`
 
-## 投稿メッセージ
+## What is configured by environment
 
-- 晴れ: `晴れです`
-- 曇り: `曇りです`
-- 雨: `@here 雨です、傘を持っていきましょう`
-- 非常に強い雨: `@here 滝が降ります、傘を持っていきましょう`と`出来ればリモートしましょう`
+| required | variable |
+| - | - |
+| ✓ | `SLACK_BOT_TOKEN` |
+| ✓ | `SLACK_CHANNEL_ID` |
+| ✓ | `WEATHER_LAT` |
+| ✓ | `WEATHER_LON` |
 
-## 設定
+### Optional
 
-このワークフローは以下の2種類の値を使います。
+| optional | variable |
+| - | - |
+| | `WEATHER_NAME` |
+| | `WEATHER_API_URL` (default: `https://api.open-meteo.com/v1/forecast`) |
+| | `WEATHER_TIMEZONE` (default: `Asia/Tokyo`) |
 
-- シークレット（暗号化・マスク）
-  - `SLACK_BOT_TOKEN`
-  - `SLACK_CHANNEL_ID`
-- 変数（公開情報）
-  - `WEATHER_LAT`
-  - `WEATHER_LON`
-  - `WEATHER_NAME`（任意・表示名）
-  - `WEATHER_API_URL`（任意、未設定時: `https://api.open-meteo.com/v1/forecast`）
-  - `WEATHER_TIMEZONE`（任意、未設定時: `Asia/Tokyo`）
+## How to run locally
 
-### 実行時引数
+- `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` are required in env
+- pass location as CLI args to avoid shell history leakage:
 
-以下はワークフローから実行されるときに `--lat` / `--lon` / `--name` / `--api-url` / `--timezone` として引数化されています。
+```bash
+$env:SLACK_BOT_TOKEN = "xoxb-..."
+$env:SLACK_CHANNEL_ID = "C092..."
+$env:WEATHER_LAT = "35.6895"
+$env:WEATHER_LON = "139.6917"
+cargo run -- --lat 35.6895 --lon 139.6917 --name "Shinjuku"
+```
 
-- 引数が未指定でも、同名の環境変数から補完されます。
-- `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` は環境変数経由のみ。
-- `--help` を付けると使い方を表示します。
+Or, if preferred, pass `--lat/--lon/--name` and keep API values in env:
 
-## セキュリティ上の注意
+```bash
+cargo run -- --lat 35.6895 --lon 139.6917 --name "Shinjuku" --api-url "https://api.open-meteo.com/v1/forecast" --timezone "Asia/Tokyo"
+```
 
-- トークンはリポジトリシークレットにのみ保存し、コミットに含めない。
-- 公開リポジトリでは `vars`（リポジトリ変数）は機密情報として扱わない。
-- 固有名詞（`WEATHER_NAME` など）は必要最小限にし、公開情報に残す内容を意識する。
-- このページで共有されたトークン文字列は公開された情報なので、すぐにローテーションしてください。
+## Security notes
 
-## 運用
+- Never commit secrets. Store Slack token and channel in GitHub Secrets.
+- Location names and coordinates are treated as non-secret input and can be moved to repository variables if shared.
+- Message content, threshold rules, and timezone are configurable in code constants and tests.
 
-- スケジュール実行: 毎日 08:00 (JST)
-- 手動実行: `workflow_dispatch`
+## GitHub Actions
 
+Workflow runs:
+
+- Scheduled at 08:00 JST (`0 23 * * *` in UTC)
+- On manual `workflow_dispatch`
+
+The workflow passes secrets/vars into environment and runs:
+
+```bash
+cargo run --release -- --lat "$WEATHER_LAT" --lon "$WEATHER_LON" --api-url "$WEATHER_API_URL" --timezone "$WEATHER_TIMEZONE" [--name "$WEATHER_NAME"]
+```
