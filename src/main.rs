@@ -360,9 +360,9 @@ fn compose_message(location_name: &Option<String>, forecast: TodayWeather) -> St
         WeatherTone::Snow => "雪です".to_string(),
         WeatherTone::Rain => {
             if forecast.is_too_wet {
-                "@here 滝が降ります、傘を持っていきましょう\n出来ればリモートしましょう".to_string()
+                "<!here> 滝が降ります、傘を持っていきましょう\n出来ればリモートしましょう".to_string()
             } else {
-                "@here 雨です、傘を持っていきましょう".to_string()
+                "<!here> 雨です、傘を持っていきましょう".to_string()
             }
         }
         WeatherTone::Other => "天候が取得できません".to_string(),
