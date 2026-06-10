@@ -6,9 +6,13 @@ on:
     - cron: "0 23 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,12 +27,24 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          WEATHER_LAT: ${{ vars.WEATHER_LAT }}
+          WEATHER_LON: ${{ vars.WEATHER_LON }}
           WEATHER_NAME: ${{ vars.WEATHER_NAME }}
-          WEATHER_TIMEZONE: ${{ vars.WEATHER_TIMEZONE }}
+          WEATHER_API_URL: ${{ vars.WEATHER_API_URL || 'https://api.open-meteo.com/v1/forecast' }}
+          WEATHER_TIMEZONE: ${{ vars.WEATHER_TIMEZONE || 'Asia/Tokyo' }}
         run: |
-          cargo run --release -- \
-            --lat "${{ vars.WEATHER_LAT }}" \
-            --lon "${{ vars.WEATHER_LON }}" \
-            --api-url "${{ vars.WEATHER_API_URL }}" \
-            --name "${WEATHER_NAME}" \
-            --timezone "${WEATHER_TIMEZONE}"
+          set -eu
+
+          RUST_ARGS=(
+            --lat "$WEATHER_LAT"
+            --lon "$WEATHER_LON"
+            --api-url "$WEATHER_API_URL"
+            --timezone "$WEATHER_TIMEZONE"
+          )
+
+          if [ -n "${WEATHER_NAME:-}" ]; then
+            RUST_ARGS+=(--name "$WEATHER_NAME")
+          fi
+
+          cargo run --release -- "${RUST_ARGS[@]}"
+
