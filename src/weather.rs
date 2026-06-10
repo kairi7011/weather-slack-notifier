@@ -2,8 +2,9 @@ use crate::{
     config::Config,
     error::{AppError, Result},
 };
-use chrono::{Datelike, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use chrono_tz::Tz;
+use jp_holidays_lib::client::Client as HolidayClient;
 use reqwest::Client;
 use serde::Deserialize;
 use std::str::FromStr;
@@ -45,13 +46,33 @@ pub fn build_weather_url(base: &str, lat: &str, lon: &str, tz: &str) -> String {
     )
 }
 
+pub fn is_weekday(date: &NaiveDate) -> bool {
+    let weekday = date.weekday().number_from_monday();
+    (1..=5).contains(&weekday)
+}
+
 pub fn is_weekday_in_timezone(timezone: &str) -> Result<bool> {
     let tz = Tz::from_str(timezone)
         .map_err(|_| AppError::new(format!("invalid timezone: {timezone}")))?;
 
-    let now = Utc::now().with_timezone(&tz);
-    let weekday = now.weekday().number_from_monday();
-    Ok((1..=5).contains(&weekday))
+    let now = Utc::now().with_timezone(&tz).date_naive();
+    Ok(is_weekday(&now))
+}
+
+pub async fn is_holiday_in_timezone(timezone: &str) -> Result<bool> {
+    let tz = Tz::from_str(timezone)
+        .map_err(|_| AppError::new(format!("invalid timezone: {timezone}")))?;
+
+    let today = Utc::now().with_timezone(&tz).date_naive();
+    is_holiday_on_date(today).await
+}
+
+pub async fn is_holiday_on_date(date: NaiveDate) -> Result<bool> {
+    let holiday_client = HolidayClient::init()
+        .await
+        .map_err(|err| AppError::new(err.to_string()))?;
+
+    Ok(holiday_client.is_holiday(date))
 }
 
 pub fn determine_forecast_index(times: &[String], today: &str) -> Option<usize> {
@@ -129,9 +150,20 @@ pub async fn fetch_weather(client: &Client, config: &Config) -> Result<TodayWeat
 #[cfg(test)]
 mod tests {
     use super::{
-        build_weather_url, classify_tone, determine_forecast_index, parse_forecast_for_today,
+        build_weather_url, classify_tone, determine_forecast_index, is_weekday,
+        parse_forecast_for_today,
     };
     use super::{DailyForecast, WeatherResponse, WeatherTone};
+    use chrono::NaiveDate;
+
+    #[test]
+    fn weekday_date_classifier_distinguishes_weekend() {
+        let wed = NaiveDate::from_ymd_opt(2026, 6, 10).expect("valid date");
+        let sun = NaiveDate::from_ymd_opt(2026, 6, 14).expect("valid date");
+
+        assert!(is_weekday(&wed));
+        assert!(!is_weekday(&sun));
+    }
 
     #[test]
     fn prefer_today_when_present() {

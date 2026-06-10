@@ -27,6 +27,9 @@ pub struct CliArgs {
 
     #[arg(long)]
     pub skip_weekday_check: bool,
+
+    #[arg(long)]
+    pub skip_holiday_check: bool,
 }
 
 #[derive(Debug)]
@@ -39,6 +42,7 @@ pub struct Config {
     pub weather_name: Option<String>,
     pub timezone: String,
     pub weekday_only: bool,
+    pub holiday_only: bool,
 }
 
 impl Config {
@@ -75,6 +79,7 @@ impl Config {
             weather_name,
             timezone,
             weekday_only: !args.skip_weekday_check,
+            holiday_only: !args.skip_holiday_check,
         })
     }
 }

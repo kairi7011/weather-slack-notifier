@@ -9,7 +9,7 @@ pub use config::{CliArgs, Config};
 pub use error::{AppError, Result};
 pub use message::compose_message;
 pub use slack::post_to_slack;
-pub use weather::{fetch_weather, is_weekday_in_timezone};
+pub use weather::{fetch_weather, is_holiday_in_timezone, is_weekday_in_timezone};
 
 pub async fn run() -> Result<()> {
     let args = CliArgs::parse();
@@ -18,6 +18,10 @@ pub async fn run() -> Result<()> {
     let client = reqwest::Client::new();
 
     if config.weekday_only && !is_weekday_in_timezone(&config.timezone)? {
+        return Ok(());
+    }
+
+    if config.holiday_only && is_holiday_in_timezone(&config.timezone).await? {
         return Ok(());
     }
 
