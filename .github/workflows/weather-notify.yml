@@ -1,0 +1,30 @@
+name: weather-forecast-to-slack
+
+on:
+  schedule:
+    - cron: "0 23 * * *" # 08:00 JST (UTC+9)
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Post weather forecast
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          WEATHER_LAT: ${{ vars.WEATHER_LAT }}
+          WEATHER_LON: ${{ vars.WEATHER_LON }}
+          WEATHER_NAME: ${{ vars.WEATHER_NAME }}
+          WEATHER_API_URL: ${{ vars.WEATHER_API_URL }}
+        run: |
+          cargo run --release
