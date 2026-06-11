@@ -36,6 +36,7 @@ pub enum WeatherTone {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TodayWeather {
+    pub date_display: String,
     pub tone: WeatherTone,
     pub is_too_wet: bool,
 }
@@ -102,7 +103,11 @@ pub fn classify_tone(code: u16) -> WeatherTone {
     }
 }
 
-pub fn parse_forecast_for_today(response: &WeatherResponse, today: &str) -> Result<TodayWeather> {
+pub fn parse_forecast_for_today(
+    response: &WeatherResponse,
+    today: &str,
+    date_display: &str,
+) -> Result<TodayWeather> {
     let idx = determine_forecast_index(&response.daily.time, today).ok_or_else(|| {
         AppError::new("weather forecast does not have any daily data".to_string())
     })?;
@@ -126,14 +131,20 @@ pub fn parse_forecast_for_today(response: &WeatherResponse, today: &str) -> Resu
         || precipitation_probability >= 70.0
         || matches!(code, 61 | 63 | 65 | 66 | 67 | 80 | 81 | 82 | 95 | 96 | 99);
 
-    Ok(TodayWeather { tone, is_too_wet })
+    Ok(TodayWeather {
+        date_display: date_display.to_string(),
+        tone,
+        is_too_wet,
+    })
 }
 
 pub async fn fetch_weather(client: &Client, config: &Config) -> Result<TodayWeather> {
     let tz = Tz::from_str(&config.timezone)
         .map_err(|_| AppError::new(format!("invalid timezone: {}", config.timezone)))?;
 
-    let today = Utc::now().with_timezone(&tz).date_naive().to_string();
+    let today = Utc::now().with_timezone(&tz).date_naive();
+    let today_for_forecast = today.to_string();
+    let date_display = today.format("%-m/%-d").to_string();
     let url = build_weather_url(
         &config.weather_url,
         &config.weather_lat,
@@ -144,7 +155,7 @@ pub async fn fetch_weather(client: &Client, config: &Config) -> Result<TodayWeat
     let response = client.get(url).send().await?.error_for_status()?;
     let body: WeatherResponse = response.json().await?;
 
-    parse_forecast_for_today(&body, &today)
+    parse_forecast_for_today(&body, &today_for_forecast, &date_display)
 }
 
 #[cfg(test)]
@@ -197,7 +208,7 @@ mod tests {
             },
         };
 
-        let today = parse_forecast_for_today(&response, "2026-06-10").unwrap();
+        let today = parse_forecast_for_today(&response, "2026-06-10", "6/10").unwrap();
         assert_eq!(today.tone, WeatherTone::Rain);
         assert!(today.is_too_wet);
     }
