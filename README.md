@@ -1,6 +1,6 @@
 # Weather Slack Notifier
 
-A small GitHub Actions job in Rust that posts the daily weather forecast to Slack at 08:00 (Asia/Tokyo).
+A small GitHub Actions job in Rust that posts the daily weather forecast to Slack at 07:00 (Asia/Tokyo).
 
 - sunny -> `晴れです`
 - cloudy -> `曇りです`
@@ -60,7 +60,7 @@ cargo run -- --lat 35.6895 --lon 139.6917 --name "Shinjuku" --api-url "https://a
 
 ## GitHub Actions
 
-- Runs at 08:00 JST (`0 23 * * *` UTC).
+- Runs at 07:00 JST (`0 22 * * *` UTC).
 - Supports `workflow_dispatch` for manual runs.
 - The workflow passes environment variables and runs:
 
