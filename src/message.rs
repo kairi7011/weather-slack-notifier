@@ -1,4 +1,4 @@
-use crate::weather::{TodayWeather, WeatherTone};
+use crate::weather::{RainImpact, RainPeriod, TodayWeather, WeatherTone};
 
 const HERE_MENTION: &str = "<!here>";
 
@@ -28,10 +28,7 @@ fn message_plan(forecast: &TodayWeather) -> MessagePlan {
         WeatherTone::Rain if forecast.is_too_wet => MessagePlan {
             mention: true,
             main: "滝が降ります",
-            notes: &[
-                "傘を持っていきましょう",
-                "出来ればリモートしましょう",
-            ],
+            notes: &["傘を持っていきましょう", "出来ればリモートしましょう"],
         },
         WeatherTone::Rain => MessagePlan {
             mention: true,
@@ -53,7 +50,59 @@ fn message_prefix(location_name: Option<&str>, date_display: &str) -> String {
     }
 }
 
+fn rain_period_header(location_name: Option<&str>, date_display: &str) -> String {
+    match location_name {
+        Some(name) => format!("本日({})の{}は雨の時間帯があります", date_display, name),
+        None => format!("本日({})は雨の時間帯があります", date_display),
+    }
+}
+
+fn should_mention_for_periods(periods: &[RainPeriod]) -> bool {
+    periods
+        .iter()
+        .any(|period| period.impact != RainImpact::LowImpact || period.is_too_wet)
+}
+
+fn rain_period_note(period: &RainPeriod) -> String {
+    let detail = match period.impact {
+        RainImpact::EarlyCommute => "早めの出勤なら雨に当たりそうです。傘が必要です".to_string(),
+        RainImpact::Commute => "出勤時間帯に雨が降りそうです。傘が必要です".to_string(),
+        RainImpact::Lunch => "外に食べに行くなら雨に当たりそうです。傘が必要です".to_string(),
+        RainImpact::Return => "退勤時間帯に雨が降りそうです。傘が必要です".to_string(),
+        RainImpact::LateReturn => "遅めの退勤なら雨に当たりそうです。傘が必要です".to_string(),
+        RainImpact::Overtime => "残業が長めになると雨に当たりそうです".to_string(),
+        RainImpact::LowImpact => {
+            "雨が降りそうです（移動予定がなければ影響は小さめです）".to_string()
+        }
+    };
+
+    format!("{}: {}", period.time_display(), detail)
+}
+
+fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) -> String {
+    let mut lines = Vec::with_capacity(forecast.rain_periods.len() + 3);
+
+    if should_mention_for_periods(&forecast.rain_periods) {
+        lines.push(HERE_MENTION.to_string());
+    }
+
+    lines.push(rain_period_header(location_name, &forecast.date_display));
+    if forecast.is_too_wet {
+        lines.push(
+            "雨が強い、または降る可能性が高い時間帯があります。移動タイミングに注意してください"
+                .to_string(),
+        );
+    }
+    lines.extend(forecast.rain_periods.iter().map(rain_period_note));
+
+    lines.join("\n")
+}
+
 pub fn compose_message(location_name: Option<&str>, forecast: &TodayWeather) -> String {
+    if !forecast.rain_periods.is_empty() {
+        return compose_period_message(location_name, forecast);
+    }
+
     let plan = message_plan(forecast);
     let mut lines = Vec::with_capacity(plan.notes.len() + 2);
 
@@ -61,7 +110,11 @@ pub fn compose_message(location_name: Option<&str>, forecast: &TodayWeather) -> 
         lines.push(HERE_MENTION.to_string());
     }
 
-    lines.push(format!("{}{}", message_prefix(location_name, &forecast.date_display), plan.main));
+    lines.push(format!(
+        "{}{}",
+        message_prefix(location_name, &forecast.date_display),
+        plan.main
+    ));
     lines.extend(plan.notes.iter().map(|note| note.to_string()));
 
     lines.join("\n")
@@ -70,15 +123,29 @@ pub fn compose_message(location_name: Option<&str>, forecast: &TodayWeather) -> 
 #[cfg(test)]
 mod tests {
     use super::compose_message;
-    use crate::weather::{TodayWeather, WeatherTone};
+    use crate::weather::{RainImpact, RainPeriod, TodayWeather, WeatherTone};
+
+    fn weather(tone: WeatherTone, is_too_wet: bool) -> TodayWeather {
+        TodayWeather {
+            date_display: "6/11".to_string(),
+            tone,
+            is_too_wet,
+            rain_periods: Vec::new(),
+        }
+    }
+
+    fn rain_period(start: &str, end: &str, impact: RainImpact) -> RainPeriod {
+        RainPeriod {
+            start_display: start.to_string(),
+            end_display: end.to_string(),
+            impact,
+            is_too_wet: false,
+        }
+    }
 
     #[test]
     fn sunny_has_location_prefix() {
-        let weather = TodayWeather {
-            date_display: "6/11".to_string(),
-            tone: WeatherTone::Sunny,
-            is_too_wet: false,
-        };
+        let weather = weather(WeatherTone::Sunny, false);
 
         let msg = compose_message(Some("新宿"), &weather);
         assert_eq!(msg, "本日(6/11)の新宿は晴れです");
@@ -86,31 +153,53 @@ mod tests {
 
     #[test]
     fn rain_includes_here_mention() {
-        let weather = TodayWeather {
-            date_display: "6/11".to_string(),
-            tone: WeatherTone::Rain,
-            is_too_wet: false,
-        };
+        let weather = weather(WeatherTone::Rain, false);
 
         let msg = compose_message(None, &weather);
-        assert_eq!(
-            msg,
-            "<!here>\n本日(6/11)は雨です\n傘を持っていきましょう"
-        );
+        assert_eq!(msg, "<!here>\n本日(6/11)は雨です\n傘を持っていきましょう");
     }
 
     #[test]
     fn heavy_rain_includes_remote_message() {
-        let weather = TodayWeather {
-            date_display: "6/11".to_string(),
-            tone: WeatherTone::Rain,
-            is_too_wet: true,
-        };
+        let weather = weather(WeatherTone::Rain, true);
 
         let msg = compose_message(Some("新宿"), &weather);
         assert_eq!(
             msg,
             "<!here>\n本日(6/11)の新宿は滝が降ります\n傘を持っていきましょう\n出来ればリモートしましょう"
+        );
+    }
+
+    #[test]
+    fn rain_periods_explain_impact_windows() {
+        let mut weather = weather(WeatherTone::Rain, false);
+        weather.rain_periods = vec![
+            rain_period("08:00", "09:00", RainImpact::EarlyCommute),
+            rain_period("09:00", "10:00", RainImpact::Commute),
+            rain_period("13:00", "14:00", RainImpact::Lunch),
+            rain_period("19:00", "20:00", RainImpact::Return),
+            rain_period("20:00", "21:00", RainImpact::LateReturn),
+            rain_period("21:00", "24:00", RainImpact::Overtime),
+        ];
+
+        let msg = compose_message(None, &weather);
+
+        assert_eq!(
+            msg,
+            "<!here>\n本日(6/11)は雨の時間帯があります\n08:00-09:00: 早めの出勤なら雨に当たりそうです。傘が必要です\n09:00-10:00: 出勤時間帯に雨が降りそうです。傘が必要です\n13:00-14:00: 外に食べに行くなら雨に当たりそうです。傘が必要です\n19:00-20:00: 退勤時間帯に雨が降りそうです。傘が必要です\n20:00-21:00: 遅めの退勤なら雨に当たりそうです。傘が必要です\n21:00-24:00: 残業が長めになると雨に当たりそうです"
+        );
+    }
+
+    #[test]
+    fn low_impact_rain_period_does_not_mention_here() {
+        let mut weather = weather(WeatherTone::Rain, false);
+        weather.rain_periods = vec![rain_period("16:00", "17:00", RainImpact::LowImpact)];
+
+        let msg = compose_message(Some("新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "本日(6/11)の新宿は雨の時間帯があります\n16:00-17:00: 雨が降りそうです（移動予定がなければ影響は小さめです）"
         );
     }
 }

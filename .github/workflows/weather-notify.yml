@@ -32,6 +32,9 @@ jobs:
           WEATHER_NAME: ${{ vars.WEATHER_NAME }}
           WEATHER_API_URL: ${{ vars.WEATHER_API_URL || 'https://api.open-meteo.com/v1/forecast' }}
           WEATHER_TIMEZONE: ${{ vars.WEATHER_TIMEZONE || 'Asia/Tokyo' }}
+          WEATHER_WORK_START_TIME: ${{ vars.WEATHER_WORK_START_TIME || '10:00' }}
+          WEATHER_WORK_END_TIME: ${{ vars.WEATHER_WORK_END_TIME || '19:00' }}
+          WEATHER_WORK_BUFFER_HOURS: ${{ vars.WEATHER_WORK_BUFFER_HOURS || '2' }}
         run: |
           set -eu
 
@@ -40,6 +43,9 @@ jobs:
             --lon "$WEATHER_LON"
             --api-url "$WEATHER_API_URL"
             --timezone "$WEATHER_TIMEZONE"
+            --work-start-time "$WEATHER_WORK_START_TIME"
+            --work-end-time "$WEATHER_WORK_END_TIME"
+            --work-buffer-hours "$WEATHER_WORK_BUFFER_HOURS"
           )
 
           if [ -n "${WEATHER_NAME:-}" ]; then
