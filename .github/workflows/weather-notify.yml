@@ -2,8 +2,8 @@ name: weather-forecast-to-slack
 
 on:
   schedule:
-    # 07:00 JST
-    - cron: "0 22 * * *"
+    # 04:30 JST
+    - cron: "30 19 * * *"
   workflow_dispatch:
 
 permissions:
