@@ -33,6 +33,8 @@ pub struct HourlyForecast {
     pub weather_code: Vec<u16>,
     pub precipitation: Vec<Option<f64>>,
     pub precipitation_probability: Vec<Option<f64>>,
+    #[serde(default)]
+    pub wind_gusts_10m: Vec<Option<f64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +52,7 @@ pub struct TodayWeather {
     pub tone: WeatherTone,
     pub is_too_wet: bool,
     pub rain_periods: Vec<RainPeriod>,
+    pub wind_periods: Vec<WindPeriod>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,9 +61,36 @@ pub struct RainPeriod {
     pub end_display: String,
     pub impact: RainImpact,
     pub is_too_wet: bool,
+    pub thunderstorm_periods: Vec<TimePeriod>,
 }
 
 impl RainPeriod {
+    pub fn time_display(&self) -> String {
+        format!("{}-{}", self.start_display, self.end_display)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindPeriod {
+    pub start_display: String,
+    pub end_display: String,
+    pub max_gust_kmh: u32,
+    pub storm_periods: Vec<TimePeriod>,
+}
+
+impl WindPeriod {
+    pub fn time_display(&self) -> String {
+        format!("{}-{}", self.start_display, self.end_display)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimePeriod {
+    pub start_display: String,
+    pub end_display: String,
+}
+
+impl TimePeriod {
     pub fn time_display(&self) -> String {
         format!("{}-{}", self.start_display, self.end_display)
     }
@@ -79,7 +109,7 @@ pub enum RainImpact {
 
 pub fn build_weather_url(base: &str, lat: &str, lon: &str, tz: &str) -> String {
     format!(
-        "{base}?latitude={lat}&longitude={lon}&daily=weather_code,precipitation_sum,precipitation_probability_max&hourly=weather_code,precipitation,precipitation_probability&timezone={tz}&forecast_days=2"
+        "{base}?latitude={lat}&longitude={lon}&daily=weather_code,precipitation_sum,precipitation_probability_max&hourly=weather_code,precipitation,precipitation_probability,wind_gusts_10m&timezone={tz}&forecast_days=2"
     )
 }
 
@@ -113,7 +143,7 @@ pub async fn is_holiday_on_date(date: NaiveDate) -> Result<bool> {
 }
 
 pub fn determine_forecast_index(times: &[String], today: &str) -> Option<usize> {
-    times.iter().position(|date| date == today).or_else(|| {
+    times.iter().position(|date| date == today).or({
         if times.is_empty() {
             None
         } else {
@@ -140,7 +170,23 @@ pub fn classify_tone(code: u16) -> WeatherTone {
 }
 
 fn is_significant_rain_code(code: u16) -> bool {
-    matches!(code, 63 | 65 | 66 | 67 | 81 | 82 | 95 | 96 | 99)
+    matches!(code, 63 | 65 | 66 | 67 | 81 | 82)
+}
+
+fn is_thunderstorm_code(code: u16) -> bool {
+    matches!(code, 95 | 96 | 99)
+}
+
+fn is_strong_wind_hour(wind_gust_kmh: f64) -> bool {
+    wind_gust_kmh >= 54.0
+}
+
+fn is_storm_wind_hour(wind_gust_kmh: f64) -> bool {
+    wind_gust_kmh >= 72.0
+}
+
+fn round_gust_kmh(wind_gust_kmh: f64) -> u32 {
+    wind_gust_kmh.round().max(0.0) as u32
 }
 
 fn is_rain_hour(code: u16, precipitation: f64, precipitation_probability: f64) -> bool {
@@ -244,6 +290,7 @@ struct RainHourSlot {
     end: NaiveDateTime,
     impact: RainImpact,
     is_too_wet: bool,
+    is_thunderstorm: bool,
 }
 
 struct RainPeriodBuilder {
@@ -251,6 +298,36 @@ struct RainPeriodBuilder {
     end: NaiveDateTime,
     impact: RainImpact,
     is_too_wet: bool,
+    thunderstorm_periods: Vec<TimePeriodBuilder>,
+}
+
+struct TimePeriodBuilder {
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+}
+
+impl TimePeriodBuilder {
+    fn into_period(self, day_end: NaiveDateTime) -> TimePeriod {
+        TimePeriod {
+            start_display: format_period_boundary(self.start, day_end),
+            end_display: format_period_boundary(self.end, day_end),
+        }
+    }
+}
+
+fn push_time_period(
+    periods: &mut Vec<TimePeriodBuilder>,
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+) {
+    if let Some(period) = periods.last_mut() {
+        if period.end == start {
+            period.end = end;
+            return;
+        }
+    }
+
+    periods.push(TimePeriodBuilder { start, end });
 }
 
 impl RainPeriodBuilder {
@@ -260,6 +337,11 @@ impl RainPeriodBuilder {
             end_display: format_period_boundary(self.end, day_end),
             impact: self.impact,
             is_too_wet: self.is_too_wet,
+            thunderstorm_periods: self
+                .thunderstorm_periods
+                .into_iter()
+                .map(|period| period.into_period(day_end))
+                .collect(),
         }
     }
 }
@@ -273,23 +355,114 @@ fn rain_periods_from_slots(slots: Vec<RainHourSlot>, day_end: NaiveDateTime) -> 
             Some(period) if period.impact == slot.impact && period.end == slot.start => {
                 period.end = slot.end;
                 period.is_too_wet |= slot.is_too_wet;
+                if slot.is_thunderstorm {
+                    push_time_period(&mut period.thunderstorm_periods, slot.start, slot.end);
+                }
             }
             Some(_) => {
                 let finished = current.take().expect("period exists");
+                let mut thunderstorm_periods = Vec::new();
+                if slot.is_thunderstorm {
+                    push_time_period(&mut thunderstorm_periods, slot.start, slot.end);
+                }
                 periods.push(finished.into_period(day_end));
                 current = Some(RainPeriodBuilder {
                     start: slot.start,
                     end: slot.end,
                     impact: slot.impact,
                     is_too_wet: slot.is_too_wet,
+                    thunderstorm_periods,
                 });
             }
             None => {
+                let mut thunderstorm_periods = Vec::new();
+                if slot.is_thunderstorm {
+                    push_time_period(&mut thunderstorm_periods, slot.start, slot.end);
+                }
                 current = Some(RainPeriodBuilder {
                     start: slot.start,
                     end: slot.end,
                     impact: slot.impact,
                     is_too_wet: slot.is_too_wet,
+                    thunderstorm_periods,
+                });
+            }
+        }
+    }
+
+    if let Some(period) = current {
+        periods.push(period.into_period(day_end));
+    }
+
+    periods
+}
+
+struct WindHourSlot {
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    max_gust_kmh: u32,
+    is_storm: bool,
+}
+
+struct WindPeriodBuilder {
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    max_gust_kmh: u32,
+    storm_periods: Vec<TimePeriodBuilder>,
+}
+
+impl WindPeriodBuilder {
+    fn into_period(self, day_end: NaiveDateTime) -> WindPeriod {
+        WindPeriod {
+            start_display: format_period_boundary(self.start, day_end),
+            end_display: format_period_boundary(self.end, day_end),
+            max_gust_kmh: self.max_gust_kmh,
+            storm_periods: self
+                .storm_periods
+                .into_iter()
+                .map(|period| period.into_period(day_end))
+                .collect(),
+        }
+    }
+}
+
+fn wind_periods_from_slots(slots: Vec<WindHourSlot>, day_end: NaiveDateTime) -> Vec<WindPeriod> {
+    let mut periods = Vec::new();
+    let mut current: Option<WindPeriodBuilder> = None;
+
+    for slot in slots {
+        match current.as_mut() {
+            Some(period) if period.end == slot.start => {
+                period.end = slot.end;
+                period.max_gust_kmh = period.max_gust_kmh.max(slot.max_gust_kmh);
+                if slot.is_storm {
+                    push_time_period(&mut period.storm_periods, slot.start, slot.end);
+                }
+            }
+            Some(_) => {
+                let finished = current.take().expect("period exists");
+                let mut storm_periods = Vec::new();
+                if slot.is_storm {
+                    push_time_period(&mut storm_periods, slot.start, slot.end);
+                }
+                periods.push(finished.into_period(day_end));
+                current = Some(WindPeriodBuilder {
+                    start: slot.start,
+                    end: slot.end,
+                    max_gust_kmh: slot.max_gust_kmh,
+                    storm_periods,
+                });
+            }
+            None => {
+                let mut storm_periods = Vec::new();
+                if slot.is_storm {
+                    push_time_period(&mut storm_periods, slot.start, slot.end);
+                }
+                current = Some(WindPeriodBuilder {
+                    start: slot.start,
+                    end: slot.end,
+                    max_gust_kmh: slot.max_gust_kmh,
+                    storm_periods,
                 });
             }
         }
@@ -312,6 +485,7 @@ fn parse_hourly_forecast_for_today(
     let (day_start, day_end) = day_bounds(today)?;
     let mut codes = Vec::new();
     let mut slots = Vec::new();
+    let mut wind_slots = Vec::new();
 
     for (idx, raw_time) in hourly.time.iter().enumerate() {
         let slot_end = parse_open_meteo_hour(raw_time)?;
@@ -331,6 +505,11 @@ fn parse_hourly_forecast_for_today(
             .get(idx)
             .and_then(|value| *value)
             .unwrap_or(0.0);
+        let wind_gust_kmh = hourly
+            .wind_gusts_10m
+            .get(idx)
+            .and_then(|value| *value)
+            .unwrap_or(0.0);
         codes.push(code);
 
         if is_rain_hour(code, precipitation, precipitation_probability) {
@@ -340,7 +519,18 @@ fn parse_hourly_forecast_for_today(
                 impact: classify_rain_impact(slot_start, commute_window, return_window),
                 is_too_wet: precipitation >= 12.0
                     || precipitation_probability >= 70.0
-                    || is_significant_rain_code(code),
+                    || is_significant_rain_code(code)
+                    || is_thunderstorm_code(code),
+                is_thunderstorm: is_thunderstorm_code(code),
+            });
+        }
+
+        if is_strong_wind_hour(wind_gust_kmh) {
+            wind_slots.push(WindHourSlot {
+                start: slot_start,
+                end: slot_end,
+                max_gust_kmh: round_gust_kmh(wind_gust_kmh),
+                is_storm: is_storm_wind_hour(wind_gust_kmh),
             });
         }
     }
@@ -352,14 +542,19 @@ fn parse_hourly_forecast_for_today(
     }
 
     let rain_periods = rain_periods_from_slots(slots, day_end);
+    let wind_periods = wind_periods_from_slots(wind_slots, day_end);
     let tone = classify_hourly_tone(&codes, !rain_periods.is_empty());
-    let is_too_wet = rain_periods.iter().any(|period| period.is_too_wet);
+    let is_too_wet = rain_periods.iter().any(|period| period.is_too_wet)
+        || wind_periods
+            .iter()
+            .any(|period| !period.storm_periods.is_empty());
 
     Ok(TodayWeather {
         date_display: date_display.to_string(),
         tone,
         is_too_wet,
         rain_periods,
+        wind_periods,
     })
 }
 
@@ -389,13 +584,15 @@ fn parse_daily_forecast_for_today(
     let tone = classify_tone(code);
     let is_too_wet = precipitation_sum >= 12.0
         || precipitation_probability >= 70.0
-        || is_significant_rain_code(code);
+        || is_significant_rain_code(code)
+        || is_thunderstorm_code(code);
 
     Ok(TodayWeather {
         date_display: date_display.to_string(),
         tone,
         is_too_wet,
         rain_periods: Vec::new(),
+        wind_periods: Vec::new(),
     })
 }
 
@@ -545,6 +742,7 @@ mod tests {
                 weather_code: vec![1, 61],
                 precipitation: vec![Some(0.0), Some(1.0)],
                 precipitation_probability: vec![Some(0.0), Some(50.0)],
+                wind_gusts_10m: vec![Some(10.0), Some(10.0)],
             }),
         };
 
@@ -597,6 +795,7 @@ mod tests {
                     Some(50.0),
                     Some(50.0),
                 ],
+                wind_gusts_10m: vec![Some(10.0); 8],
             }),
         };
 
@@ -635,6 +834,7 @@ mod tests {
                 weather_code: vec![61],
                 precipitation: vec![Some(1.0)],
                 precipitation_probability: vec![Some(60.0)],
+                wind_gusts_10m: vec![Some(10.0)],
             }),
         };
         let today = parse(&response).unwrap();
@@ -661,6 +861,7 @@ mod tests {
                 weather_code: vec![61, 1],
                 precipitation: vec![Some(3.0), Some(0.0)],
                 precipitation_probability: vec![Some(90.0), Some(0.0)],
+                wind_gusts_10m: vec![Some(10.0), Some(10.0)],
             }),
         };
 
@@ -668,6 +869,72 @@ mod tests {
 
         assert_eq!(today.rain_periods[0].time_display(), "07:00-08:00");
         assert_eq!(today.rain_periods[0].impact, RainImpact::LowImpact);
+    }
+
+    #[test]
+    fn hourly_forecast_nests_thunderstorm_inside_rain_period() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![1],
+                precipitation_sum: vec![Some(0.0)],
+                precipitation_probability_max: vec![Some(0.0)],
+            },
+            hourly: Some(HourlyForecast {
+                time: vec![
+                    "2026-06-10T09:00".to_string(),
+                    "2026-06-10T10:00".to_string(),
+                ],
+                weather_code: vec![95, 61],
+                precipitation: vec![Some(1.0), Some(1.0)],
+                precipitation_probability: vec![Some(60.0), Some(60.0)],
+                wind_gusts_10m: vec![Some(10.0), Some(10.0)],
+            }),
+        };
+
+        let today = parse(&response).unwrap();
+
+        assert!(today.is_too_wet);
+        assert_eq!(today.rain_periods[0].time_display(), "08:00-09:00");
+        assert_eq!(
+            today.rain_periods[0].thunderstorm_periods[0].time_display(),
+            "08:00-09:00"
+        );
+    }
+
+    #[test]
+    fn hourly_forecast_groups_wind_periods_and_nests_storm_wind() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![1],
+                precipitation_sum: vec![Some(0.0)],
+                precipitation_probability_max: vec![Some(0.0)],
+            },
+            hourly: Some(HourlyForecast {
+                time: vec![
+                    "2026-06-10T09:00".to_string(),
+                    "2026-06-10T10:00".to_string(),
+                    "2026-06-10T11:00".to_string(),
+                    "2026-06-10T12:00".to_string(),
+                ],
+                weather_code: vec![1, 1, 1, 1],
+                precipitation: vec![Some(0.0), Some(0.0), Some(0.0), Some(0.0)],
+                precipitation_probability: vec![Some(0.0), Some(0.0), Some(0.0), Some(0.0)],
+                wind_gusts_10m: vec![Some(55.0), Some(74.0), Some(76.0), Some(40.0)],
+            }),
+        };
+
+        let today = parse(&response).unwrap();
+
+        assert!(today.rain_periods.is_empty());
+        assert!(today.is_too_wet);
+        assert_eq!(today.wind_periods[0].time_display(), "08:00-11:00");
+        assert_eq!(today.wind_periods[0].max_gust_kmh, 76);
+        assert_eq!(
+            today.wind_periods[0].storm_periods[0].time_display(),
+            "09:00-11:00"
+        );
     }
 
     #[test]
@@ -684,6 +951,7 @@ mod tests {
                 weather_code: vec![1],
                 precipitation: vec![Some(0.0)],
                 precipitation_probability: vec![Some(0.0)],
+                wind_gusts_10m: vec![Some(10.0)],
             }),
         };
 
@@ -705,6 +973,8 @@ mod tests {
         assert!(url.starts_with("https://api.example.com/forecast?latitude=35.0"));
         assert!(url.contains("timezone=Asia/Tokyo"));
         assert!(url.contains("daily=weather_code,precipitation_sum,precipitation_probability_max"));
-        assert!(url.contains("hourly=weather_code,precipitation,precipitation_probability"));
+        assert!(url.contains(
+            "hourly=weather_code,precipitation,precipitation_probability,wind_gusts_10m"
+        ));
     }
 }

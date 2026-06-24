@@ -17,6 +17,13 @@ When hourly forecast data is available, rain is reported by affected time band:
 - `21:00-24:00`: long-overtime return
 - other hours: lower-impact rain unless you have a planned trip
 
+Open-Meteo does not identify named typhoons or official warnings in this
+forecast response. Special notes are derived from forecast variables:
+
+- thunderstorm -> WMO weather codes 95, 96, 99, shown inside the rain period
+- strong wind -> hourly wind gusts from 54 km/h
+- storm wind -> hourly wind gusts from 72 km/h, shown inside the strong-wind period
+
 ## What is configured by environment
 
 | required | variable |
