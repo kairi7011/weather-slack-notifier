@@ -1,24 +1,27 @@
 # Weather Slack Notifier
 
-A small GitHub Actions job in Rust, scheduled at 04:30 (Asia/Tokyo), that posts the daily rain-impact forecast to Slack.
+A small GitHub Actions job in Rust, scheduled at 04:30 (Asia/Tokyo), that posts the daily weather forecast to Slack.
 
 - sunny -> `晴れです`
 - cloudy -> `曇りです`
 - rain -> `<!here> 雨の時間帯があります`
-- heavy rain -> `<!here> 滝が降ります、傘を持っていきましょう。出来ればリモートしましょう`
+- heavy rain -> `<!here> 雨が強い予報です、傘を持っていきましょう。できればリモートしましょう`
 
-When hourly forecast data is available, contiguous rain is reported as one
-range. Affected time bands are summarized inside that rain range:
+When hourly forecast data is available, contained time bands are collapsed into
+one user-facing weather summary instead of listing commute, lunch, return, and
+overtime windows separately:
 
-- continuous rain -> `雨の時間帯: 01:00-24:00`
-- affected windows -> `影響: 出勤 08:00-10:00、昼 12:00-14:00、退勤 19:00-21:00、残業 21:00-24:00`
+- all-day rain -> `本日(6/25)の西新宿は一日雨の予報です`
+- all-day stormy weather -> `本日(6/25)の西新宿は一日悪天候です` + `雷雨、暴風雨の予報が出ています`
+- partial rain -> `雨の時間帯: 16:00-17:00`
 
 Open-Meteo does not identify named typhoons or official warnings in this
 forecast response. Special notes are derived from forecast variables:
 
-- thunderstorm -> WMO weather codes 95, 96, 99, shown inside the rain period
+- heavy rain -> hourly precipitation from 12 mm/h or WMO rain codes 63, 65, 66, 67, 81, 82
+- thunderstorm -> WMO weather codes 95, 96, 99
 - strong wind -> hourly wind gusts from 54 km/h
-- storm wind -> hourly wind gusts from 72 km/h, shown inside the strong-wind period
+- storm wind -> hourly wind gusts from 72 km/h
 
 ## What is configured by environment
 

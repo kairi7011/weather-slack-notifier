@@ -615,15 +615,13 @@ fn parse_hourly_forecast_for_today(
         codes.push(code);
 
         if is_rain_hour(code, precipitation, precipitation_probability) {
-            let is_heavy = precipitation >= 12.0
-                || precipitation_probability >= 70.0
-                || is_significant_rain_code(code);
+            let is_heavy = precipitation >= 12.0 || is_significant_rain_code(code);
             let is_thunderstorm = is_thunderstorm_code(code);
             slots.push(RainHourSlot {
                 start: slot_start,
                 end: slot_end,
                 impact: classify_rain_impact(slot_start, commute_window, return_window),
-                is_too_wet: is_heavy || is_thunderstorm,
+                is_too_wet: is_heavy || precipitation_probability >= 70.0 || is_thunderstorm,
                 is_heavy,
                 is_thunderstorm,
             });
@@ -1033,7 +1031,39 @@ mod tests {
         let today = parse(&response).unwrap();
 
         assert_eq!(today.rain_periods[0].time_display(), "07:00-08:00");
+        assert!(today.rain_periods[0].is_too_wet);
+        assert!(today.rain_periods[0].heavy_periods.is_empty());
         assert!(today.rain_periods[0].impact_periods.is_empty());
+    }
+
+    #[test]
+    fn hourly_forecast_tracks_heavy_rain_periods_from_precipitation_amount() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![1],
+                precipitation_sum: vec![Some(0.0)],
+                precipitation_probability_max: vec![Some(0.0)],
+            },
+            hourly: Some(HourlyForecast {
+                time: vec![
+                    "2026-06-10T09:00".to_string(),
+                    "2026-06-10T10:00".to_string(),
+                ],
+                weather_code: vec![61, 61],
+                precipitation: vec![Some(12.0), Some(1.0)],
+                precipitation_probability: vec![Some(60.0), Some(60.0)],
+                wind_gusts_10m: vec![Some(10.0), Some(10.0)],
+            }),
+        };
+
+        let today = parse(&response).unwrap();
+
+        assert_eq!(today.rain_periods[0].time_display(), "08:00-10:00");
+        assert_eq!(
+            today.rain_periods[0].heavy_periods[0].time_display(),
+            "08:00-09:00"
+        );
     }
 
     #[test]
