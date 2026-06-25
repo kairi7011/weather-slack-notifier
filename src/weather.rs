@@ -59,12 +59,26 @@ pub struct TodayWeather {
 pub struct RainPeriod {
     pub start_display: String,
     pub end_display: String,
-    pub impact: RainImpact,
     pub is_too_wet: bool,
+    pub impact_periods: Vec<RainImpactPeriod>,
+    pub heavy_periods: Vec<TimePeriod>,
     pub thunderstorm_periods: Vec<TimePeriod>,
 }
 
 impl RainPeriod {
+    pub fn time_display(&self) -> String {
+        format!("{}-{}", self.start_display, self.end_display)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RainImpactPeriod {
+    pub start_display: String,
+    pub end_display: String,
+    pub impact: RainImpact,
+}
+
+impl RainImpactPeriod {
     pub fn time_display(&self) -> String {
         format!("{}-{}", self.start_display, self.end_display)
     }
@@ -290,15 +304,33 @@ struct RainHourSlot {
     end: NaiveDateTime,
     impact: RainImpact,
     is_too_wet: bool,
+    is_heavy: bool,
     is_thunderstorm: bool,
 }
 
 struct RainPeriodBuilder {
     start: NaiveDateTime,
     end: NaiveDateTime,
-    impact: RainImpact,
     is_too_wet: bool,
+    impact_periods: Vec<RainImpactPeriodBuilder>,
+    heavy_periods: Vec<TimePeriodBuilder>,
     thunderstorm_periods: Vec<TimePeriodBuilder>,
+}
+
+struct RainImpactPeriodBuilder {
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    impact: RainImpact,
+}
+
+impl RainImpactPeriodBuilder {
+    fn into_period(self, day_end: NaiveDateTime) -> RainImpactPeriod {
+        RainImpactPeriod {
+            start_display: format_period_boundary(self.start, day_end),
+            end_display: format_period_boundary(self.end, day_end),
+            impact: self.impact,
+        }
+    }
 }
 
 struct TimePeriodBuilder {
@@ -330,13 +362,60 @@ fn push_time_period(
     periods.push(TimePeriodBuilder { start, end });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RainImpactGroup {
+    Commute,
+    Lunch,
+    Return,
+    Overtime,
+}
+
+fn rain_impact_group(impact: RainImpact) -> Option<RainImpactGroup> {
+    match impact {
+        RainImpact::EarlyCommute | RainImpact::Commute => Some(RainImpactGroup::Commute),
+        RainImpact::Lunch => Some(RainImpactGroup::Lunch),
+        RainImpact::Return | RainImpact::LateReturn => Some(RainImpactGroup::Return),
+        RainImpact::Overtime => Some(RainImpactGroup::Overtime),
+        RainImpact::LowImpact => None,
+    }
+}
+
+fn push_impact_period(
+    periods: &mut Vec<RainImpactPeriodBuilder>,
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    impact: RainImpact,
+) {
+    let Some(group) = rain_impact_group(impact) else {
+        return;
+    };
+
+    if let Some(period) = periods.last_mut() {
+        if period.end == start && rain_impact_group(period.impact) == Some(group) {
+            period.end = end;
+            return;
+        }
+    }
+
+    periods.push(RainImpactPeriodBuilder { start, end, impact });
+}
+
 impl RainPeriodBuilder {
     fn into_period(self, day_end: NaiveDateTime) -> RainPeriod {
         RainPeriod {
             start_display: format_period_boundary(self.start, day_end),
             end_display: format_period_boundary(self.end, day_end),
-            impact: self.impact,
             is_too_wet: self.is_too_wet,
+            impact_periods: self
+                .impact_periods
+                .into_iter()
+                .map(|period| period.into_period(day_end))
+                .collect(),
+            heavy_periods: self
+                .heavy_periods
+                .into_iter()
+                .map(|period| period.into_period(day_end))
+                .collect(),
             thunderstorm_periods: self
                 .thunderstorm_periods
                 .into_iter()
@@ -352,15 +431,30 @@ fn rain_periods_from_slots(slots: Vec<RainHourSlot>, day_end: NaiveDateTime) -> 
 
     for slot in slots {
         match current.as_mut() {
-            Some(period) if period.impact == slot.impact && period.end == slot.start => {
+            Some(period) if period.end == slot.start => {
                 period.end = slot.end;
                 period.is_too_wet |= slot.is_too_wet;
+                push_impact_period(
+                    &mut period.impact_periods,
+                    slot.start,
+                    slot.end,
+                    slot.impact,
+                );
+                if slot.is_heavy {
+                    push_time_period(&mut period.heavy_periods, slot.start, slot.end);
+                }
                 if slot.is_thunderstorm {
                     push_time_period(&mut period.thunderstorm_periods, slot.start, slot.end);
                 }
             }
             Some(_) => {
                 let finished = current.take().expect("period exists");
+                let mut impact_periods = Vec::new();
+                push_impact_period(&mut impact_periods, slot.start, slot.end, slot.impact);
+                let mut heavy_periods = Vec::new();
+                if slot.is_heavy {
+                    push_time_period(&mut heavy_periods, slot.start, slot.end);
+                }
                 let mut thunderstorm_periods = Vec::new();
                 if slot.is_thunderstorm {
                     push_time_period(&mut thunderstorm_periods, slot.start, slot.end);
@@ -369,12 +463,19 @@ fn rain_periods_from_slots(slots: Vec<RainHourSlot>, day_end: NaiveDateTime) -> 
                 current = Some(RainPeriodBuilder {
                     start: slot.start,
                     end: slot.end,
-                    impact: slot.impact,
                     is_too_wet: slot.is_too_wet,
+                    impact_periods,
+                    heavy_periods,
                     thunderstorm_periods,
                 });
             }
             None => {
+                let mut impact_periods = Vec::new();
+                push_impact_period(&mut impact_periods, slot.start, slot.end, slot.impact);
+                let mut heavy_periods = Vec::new();
+                if slot.is_heavy {
+                    push_time_period(&mut heavy_periods, slot.start, slot.end);
+                }
                 let mut thunderstorm_periods = Vec::new();
                 if slot.is_thunderstorm {
                     push_time_period(&mut thunderstorm_periods, slot.start, slot.end);
@@ -382,8 +483,9 @@ fn rain_periods_from_slots(slots: Vec<RainHourSlot>, day_end: NaiveDateTime) -> 
                 current = Some(RainPeriodBuilder {
                     start: slot.start,
                     end: slot.end,
-                    impact: slot.impact,
                     is_too_wet: slot.is_too_wet,
+                    impact_periods,
+                    heavy_periods,
                     thunderstorm_periods,
                 });
             }
@@ -513,15 +615,17 @@ fn parse_hourly_forecast_for_today(
         codes.push(code);
 
         if is_rain_hour(code, precipitation, precipitation_probability) {
+            let is_heavy = precipitation >= 12.0
+                || precipitation_probability >= 70.0
+                || is_significant_rain_code(code);
+            let is_thunderstorm = is_thunderstorm_code(code);
             slots.push(RainHourSlot {
                 start: slot_start,
                 end: slot_end,
                 impact: classify_rain_impact(slot_start, commute_window, return_window),
-                is_too_wet: precipitation >= 12.0
-                    || precipitation_probability >= 70.0
-                    || is_significant_rain_code(code)
-                    || is_thunderstorm_code(code),
-                is_thunderstorm: is_thunderstorm_code(code),
+                is_too_wet: is_heavy || is_thunderstorm,
+                is_heavy,
+                is_thunderstorm,
             });
         }
 
@@ -751,7 +855,7 @@ mod tests {
         assert_eq!(today.tone, WeatherTone::Rain);
         assert_eq!(today.rain_periods.len(), 1);
         assert_eq!(today.rain_periods[0].time_display(), "16:00-17:00");
-        assert_eq!(today.rain_periods[0].impact, RainImpact::LowImpact);
+        assert!(today.rain_periods[0].impact_periods.is_empty());
     }
 
     #[test]
@@ -805,16 +909,74 @@ mod tests {
         let actual = today
             .rain_periods
             .iter()
-            .map(|period| (period.time_display(), period.impact))
+            .map(|period| period.time_display())
             .collect::<Vec<_>>();
         assert_eq!(
             actual,
             vec![
-                ("08:00-09:00".to_string(), RainImpact::EarlyCommute),
-                ("09:00-10:00".to_string(), RainImpact::Commute),
+                "08:00-10:00".to_string(),
+                "13:00-14:00".to_string(),
+                "19:00-24:00".to_string(),
+            ]
+        );
+        let impact_periods = today
+            .rain_periods
+            .iter()
+            .flat_map(|period| period.impact_periods.iter())
+            .map(|period| (period.time_display(), period.impact))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            impact_periods,
+            vec![
+                ("08:00-10:00".to_string(), RainImpact::EarlyCommute),
                 ("13:00-14:00".to_string(), RainImpact::Lunch),
-                ("19:00-20:00".to_string(), RainImpact::Return),
-                ("20:00-21:00".to_string(), RainImpact::LateReturn),
+                ("19:00-21:00".to_string(), RainImpact::Return),
+                ("21:00-24:00".to_string(), RainImpact::Overtime),
+            ]
+        );
+    }
+
+    #[test]
+    fn hourly_forecast_keeps_contiguous_all_day_rain_as_one_period() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![61],
+                precipitation_sum: vec![Some(10.0)],
+                precipitation_probability_max: vec![Some(60.0)],
+            },
+            hourly: Some(HourlyForecast {
+                time: (2..=24)
+                    .map(|hour| {
+                        if hour == 24 {
+                            "2026-06-11T00:00".to_string()
+                        } else {
+                            format!("2026-06-10T{hour:02}:00")
+                        }
+                    })
+                    .collect(),
+                weather_code: vec![61; 23],
+                precipitation: vec![Some(1.0); 23],
+                precipitation_probability: vec![Some(50.0); 23],
+                wind_gusts_10m: vec![Some(10.0); 23],
+            }),
+        };
+
+        let today = parse(&response).unwrap();
+
+        assert_eq!(today.rain_periods.len(), 1);
+        assert_eq!(today.rain_periods[0].time_display(), "01:00-24:00");
+        let impact_periods = today.rain_periods[0]
+            .impact_periods
+            .iter()
+            .map(|period| (period.time_display(), period.impact))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            impact_periods,
+            vec![
+                ("08:00-10:00".to_string(), RainImpact::EarlyCommute),
+                ("12:00-14:00".to_string(), RainImpact::Lunch),
+                ("19:00-21:00".to_string(), RainImpact::Return),
                 ("21:00-24:00".to_string(), RainImpact::Overtime),
             ]
         );
@@ -841,7 +1003,10 @@ mod tests {
 
         assert_eq!(today.tone, WeatherTone::Rain);
         assert_eq!(today.rain_periods[0].time_display(), "08:00-09:00");
-        assert_eq!(today.rain_periods[0].impact, RainImpact::EarlyCommute);
+        assert_eq!(
+            today.rain_periods[0].impact_periods[0].impact,
+            RainImpact::EarlyCommute
+        );
     }
 
     #[test]
@@ -868,7 +1033,7 @@ mod tests {
         let today = parse(&response).unwrap();
 
         assert_eq!(today.rain_periods[0].time_display(), "07:00-08:00");
-        assert_eq!(today.rain_periods[0].impact, RainImpact::LowImpact);
+        assert!(today.rain_periods[0].impact_periods.is_empty());
     }
 
     #[test]
@@ -895,7 +1060,7 @@ mod tests {
         let today = parse(&response).unwrap();
 
         assert!(today.is_too_wet);
-        assert_eq!(today.rain_periods[0].time_display(), "08:00-09:00");
+        assert_eq!(today.rain_periods[0].time_display(), "08:00-10:00");
         assert_eq!(
             today.rain_periods[0].thunderstorm_periods[0].time_display(),
             "08:00-09:00"

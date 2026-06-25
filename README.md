@@ -7,15 +7,11 @@ A small GitHub Actions job in Rust, scheduled at 04:30 (Asia/Tokyo), that posts 
 - rain -> `<!here> 雨の時間帯があります`
 - heavy rain -> `<!here> 滝が降ります、傘を持っていきましょう。出来ればリモートしましょう`
 
-When hourly forecast data is available, rain is reported by affected time band:
+When hourly forecast data is available, contiguous rain is reported as one
+range. Affected time bands are summarized inside that rain range:
 
-- `08:00-09:00`: early commute
-- `09:00-10:00`: commute
-- `12:00-14:00`: lunch
-- `19:00-20:00`: return commute
-- `20:00-21:00`: late return commute
-- `21:00-24:00`: long-overtime return
-- other hours: lower-impact rain unless you have a planned trip
+- continuous rain -> `雨の時間帯: 01:00-24:00`
+- affected windows -> `影響: 出勤 08:00-10:00、昼 12:00-14:00、退勤 19:00-21:00、残業 21:00-24:00`
 
 Open-Meteo does not identify named typhoons or official warnings in this
 forecast response. Special notes are derived from forecast variables:
