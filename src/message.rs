@@ -25,9 +25,14 @@ fn message_plan(forecast: &TodayWeather) -> MessagePlan {
             main: "雪が降りそうです",
             notes: &[],
         },
+        WeatherTone::Rain if forecast.has_heavy_rain => MessagePlan {
+            mention: true,
+            main: "滝が降ります",
+            notes: &["傘を持っていきましょう", "できればリモートしましょう"],
+        },
         WeatherTone::Rain if forecast.is_too_wet => MessagePlan {
             mention: true,
-            main: "雨が強い予報です",
+            main: "雨に注意が必要です",
             notes: &["傘を持っていきましょう", "できればリモートしましょう"],
         },
         WeatherTone::Rain => MessagePlan {
@@ -59,7 +64,7 @@ fn rainy_header(location_name: Option<&str>, date_display: &str) -> String {
 
 fn all_day_rain_header(location_name: Option<&str>, date_display: &str, heavy: bool) -> String {
     let suffix = if heavy {
-        "一日強い雨の予報です"
+        "一日滝が降る予報です"
     } else {
         "一日雨の予報です"
     };
@@ -94,7 +99,7 @@ fn format_rain_period(period: &RainPeriod) -> String {
     let mut details = Vec::new();
     if !period.heavy_periods.is_empty() {
         details.push(format!(
-            "強い雨: {}",
+            "滝が降る雨: {}",
             format_time_periods(&period.heavy_periods)
         ));
     }
@@ -166,7 +171,7 @@ fn heavy_rain_note(periods: &[RainPeriod]) -> Option<String> {
     if ranges.is_empty() {
         None
     } else {
-        Some(format!("強い雨: {}", ranges.join(", ")))
+        Some(format!("滝が降る時間帯: {}", ranges.join(", ")))
     }
 }
 
@@ -393,11 +398,12 @@ mod tests {
         RainImpact, RainImpactPeriod, RainPeriod, TimePeriod, TodayWeather, WeatherTone, WindPeriod,
     };
 
-    fn weather(tone: WeatherTone, is_too_wet: bool) -> TodayWeather {
+    fn weather(tone: WeatherTone, is_too_wet: bool, has_heavy_rain: bool) -> TodayWeather {
         TodayWeather {
             date_display: "6/11".to_string(),
             tone,
             is_too_wet,
+            has_heavy_rain,
             rain_periods: Vec::new(),
             wind_periods: Vec::new(),
         }
@@ -426,7 +432,7 @@ mod tests {
 
     #[test]
     fn sunny_has_location_prefix() {
-        let weather = weather(WeatherTone::Sunny, false);
+        let weather = weather(WeatherTone::Sunny, false, false);
 
         let msg = compose_message(Some("新宿"), &weather);
         assert_eq!(msg, "本日(6/11)の新宿は晴れです");
@@ -434,7 +440,7 @@ mod tests {
 
     #[test]
     fn rain_includes_here_mention() {
-        let weather = weather(WeatherTone::Rain, false);
+        let weather = weather(WeatherTone::Rain, false, false);
 
         let msg = compose_message(None, &weather);
         assert_eq!(msg, "<!here>\n本日(6/11)は雨です\n傘を持っていきましょう");
@@ -442,18 +448,29 @@ mod tests {
 
     #[test]
     fn heavy_rain_includes_remote_message() {
-        let weather = weather(WeatherTone::Rain, true);
+        let weather = weather(WeatherTone::Rain, true, true);
 
         let msg = compose_message(Some("新宿"), &weather);
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の新宿は雨が強い予報です\n傘を持っていきましょう\nできればリモートしましょう"
+            "<!here>\n本日(6/11)の新宿は滝が降ります\n傘を持っていきましょう\nできればリモートしましょう"
+        );
+    }
+
+    #[test]
+    fn high_probability_rain_without_heavy_amount_does_not_say_waterfall() {
+        let weather = weather(WeatherTone::Rain, true, false);
+
+        let msg = compose_message(Some("新宿"), &weather);
+        assert_eq!(
+            msg,
+            "<!here>\n本日(6/11)の新宿は雨に注意が必要です\n傘を持っていきましょう\nできればリモートしましょう"
         );
     }
 
     #[test]
     fn all_day_rain_summarizes_without_impact_windows() {
-        let mut weather = weather(WeatherTone::Rain, false);
+        let mut weather = weather(WeatherTone::Rain, false, false);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.impact_periods = vec![
             RainImpactPeriod {
@@ -489,7 +506,7 @@ mod tests {
 
     #[test]
     fn all_day_high_probability_rain_is_not_called_heavy_without_heavy_periods() {
-        let mut weather = weather(WeatherTone::Rain, false);
+        let mut weather = weather(WeatherTone::Rain, false, false);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.is_too_wet = true;
         weather.rain_periods = vec![period];
@@ -504,7 +521,7 @@ mod tests {
 
     #[test]
     fn all_day_heavy_rain_uses_direct_heavy_rain_summary() {
-        let mut weather = weather(WeatherTone::Rain, true);
+        let mut weather = weather(WeatherTone::Rain, true, true);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.heavy_periods = vec![TimePeriod {
             start_display: "08:00".to_string(),
@@ -516,13 +533,13 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は一日強い雨の予報です\n傘を持っていきましょう\nできればリモートしましょう"
+            "<!here>\n本日(6/11)の西新宿は一日滝が降る予報です\n傘を持っていきましょう\nできればリモートしましょう"
         );
     }
 
     #[test]
     fn partial_rain_reports_only_the_rain_range() {
-        let mut weather = weather(WeatherTone::Rain, false);
+        let mut weather = weather(WeatherTone::Rain, false, false);
         weather.rain_periods = vec![rain_period("16:00", "17:00", RainImpact::LowImpact)];
 
         let msg = compose_message(Some("新宿"), &weather);
@@ -535,7 +552,7 @@ mod tests {
 
     #[test]
     fn partial_heavy_rain_is_not_nested_inside_plain_rain_range() {
-        let mut weather = weather(WeatherTone::Rain, true);
+        let mut weather = weather(WeatherTone::Rain, true, true);
         let mut period = rain_period("08:00", "10:00", RainImpact::Commute);
         period.heavy_periods = vec![TimePeriod {
             start_display: "08:00".to_string(),
@@ -547,13 +564,13 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n強い雨: 08:00-10:00\nできればリモートしましょう"
+            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 08:00-10:00\nできればリモートしましょう"
         );
     }
 
     #[test]
     fn rain_periods_include_thunderstorm_inside_the_period_note() {
-        let mut weather = weather(WeatherTone::Rain, true);
+        let mut weather = weather(WeatherTone::Rain, true, false);
         let mut period = rain_period("08:00", "09:00", RainImpact::EarlyCommute);
         period.thunderstorm_periods = vec![TimePeriod {
             start_display: "08:00".to_string(),
@@ -571,7 +588,7 @@ mod tests {
 
     #[test]
     fn all_day_bad_weather_summarizes_to_weather_type_without_time_ranges() {
-        let mut weather = weather(WeatherTone::Rain, true);
+        let mut weather = weather(WeatherTone::Rain, true, false);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.thunderstorm_periods = vec![TimePeriod {
             start_display: "08:00".to_string(),
@@ -598,7 +615,7 @@ mod tests {
 
     #[test]
     fn wind_periods_are_reported_without_rain_periods() {
-        let mut weather = weather(WeatherTone::Cloudy, false);
+        let mut weather = weather(WeatherTone::Cloudy, false, false);
         weather.wind_periods = vec![WindPeriod {
             start_display: "09:00".to_string(),
             end_display: "13:00".to_string(),
@@ -619,7 +636,7 @@ mod tests {
 
     #[test]
     fn storm_wind_is_called_storm_rain_only_when_it_overlaps_rain() {
-        let mut weather = weather(WeatherTone::Rain, true);
+        let mut weather = weather(WeatherTone::Rain, true, false);
         weather.rain_periods = vec![rain_period("16:00", "17:00", RainImpact::LowImpact)];
         weather.wind_periods = vec![WindPeriod {
             start_display: "09:00".to_string(),

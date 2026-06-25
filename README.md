@@ -5,13 +5,14 @@ A small GitHub Actions job in Rust, scheduled at 04:30 (Asia/Tokyo), that posts 
 - sunny -> `晴れです`
 - cloudy -> `曇りです`
 - rain -> `<!here> 雨の時間帯があります`
-- heavy rain -> `<!here> 雨が強い予報です、傘を持っていきましょう。できればリモートしましょう`
+- heavy rain -> `<!here> 滝が降ります、傘を持っていきましょう。できればリモートしましょう`
 
 When hourly forecast data is available, contained time bands are collapsed into
 one user-facing weather summary instead of listing commute, lunch, return, and
 overtime windows separately:
 
 - all-day rain -> `本日(6/25)の西新宿は一日雨の予報です`
+- all-day heavy rain -> `本日(6/25)の西新宿は一日滝が降る予報です`
 - all-day stormy weather -> `本日(6/25)の西新宿は一日悪天候です` + `雷雨、暴風雨の予報が出ています`
 - partial rain -> `雨の時間帯: 16:00-17:00`
 

@@ -51,6 +51,7 @@ pub struct TodayWeather {
     pub date_display: String,
     pub tone: WeatherTone,
     pub is_too_wet: bool,
+    pub has_heavy_rain: bool,
     pub rain_periods: Vec<RainPeriod>,
     pub wind_periods: Vec<WindPeriod>,
 }
@@ -646,6 +647,9 @@ fn parse_hourly_forecast_for_today(
     let rain_periods = rain_periods_from_slots(slots, day_end);
     let wind_periods = wind_periods_from_slots(wind_slots, day_end);
     let tone = classify_hourly_tone(&codes, !rain_periods.is_empty());
+    let has_heavy_rain = rain_periods
+        .iter()
+        .any(|period| !period.heavy_periods.is_empty());
     let is_too_wet = rain_periods.iter().any(|period| period.is_too_wet)
         || wind_periods
             .iter()
@@ -655,6 +659,7 @@ fn parse_hourly_forecast_for_today(
         date_display: date_display.to_string(),
         tone,
         is_too_wet,
+        has_heavy_rain,
         rain_periods,
         wind_periods,
     })
@@ -684,15 +689,15 @@ fn parse_daily_forecast_for_today(
         .unwrap_or(0.0);
 
     let tone = classify_tone(code);
-    let is_too_wet = precipitation_sum >= 12.0
-        || precipitation_probability >= 70.0
-        || is_significant_rain_code(code)
-        || is_thunderstorm_code(code);
+    let has_heavy_rain = precipitation_sum >= 12.0 || is_significant_rain_code(code);
+    let is_too_wet =
+        has_heavy_rain || precipitation_probability >= 70.0 || is_thunderstorm_code(code);
 
     Ok(TodayWeather {
         date_display: date_display.to_string(),
         tone,
         is_too_wet,
+        has_heavy_rain,
         rain_periods: Vec::new(),
         wind_periods: Vec::new(),
     })
@@ -824,7 +829,26 @@ mod tests {
         let today = parse(&response).unwrap();
         assert_eq!(today.tone, WeatherTone::Rain);
         assert!(today.is_too_wet);
+        assert!(!today.has_heavy_rain);
         assert!(today.rain_periods.is_empty());
+    }
+
+    #[test]
+    fn daily_forecast_marks_precipitation_amount_as_heavy_rain() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![61],
+                precipitation_sum: vec![Some(12.0)],
+                precipitation_probability_max: vec![Some(60.0)],
+            },
+            hourly: None,
+        };
+
+        let today = parse(&response).unwrap();
+
+        assert!(today.is_too_wet);
+        assert!(today.has_heavy_rain);
     }
 
     #[test]
@@ -1033,6 +1057,7 @@ mod tests {
         assert_eq!(today.rain_periods[0].time_display(), "07:00-08:00");
         assert!(today.rain_periods[0].is_too_wet);
         assert!(today.rain_periods[0].heavy_periods.is_empty());
+        assert!(!today.has_heavy_rain);
         assert!(today.rain_periods[0].impact_periods.is_empty());
     }
 
@@ -1060,6 +1085,7 @@ mod tests {
         let today = parse(&response).unwrap();
 
         assert_eq!(today.rain_periods[0].time_display(), "08:00-10:00");
+        assert!(today.has_heavy_rain);
         assert_eq!(
             today.rain_periods[0].heavy_periods[0].time_display(),
             "08:00-09:00"
