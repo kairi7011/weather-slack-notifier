@@ -91,6 +91,7 @@ struct RainImpactSummary {
     outbound_commute: bool,
     return_commute: bool,
     lunch: bool,
+    overtime: bool,
 }
 
 impl RainImpactSummary {
@@ -100,6 +101,10 @@ impl RainImpactSummary {
 
     fn has_routine_impact(&self) -> bool {
         self.has_commute() || self.lunch
+    }
+
+    fn has_any_impact(&self) -> bool {
+        self.has_routine_impact() || self.overtime
     }
 }
 
@@ -114,7 +119,45 @@ fn rain_impact_summary(periods: &[RainPeriod]) -> RainImpactSummary {
             RainImpact::EarlyCommute | RainImpact::Commute => summary.outbound_commute = true,
             RainImpact::Return | RainImpact::LateReturn => summary.return_commute = true,
             RainImpact::Lunch => summary.lunch = true,
-            RainImpact::Overtime | RainImpact::LowImpact => {}
+            RainImpact::Overtime => summary.overtime = true,
+            RainImpact::LowImpact => {}
+        }
+    }
+
+    summary
+}
+
+fn rain_impact_summary_for_time_periods(
+    rain_periods: &[RainPeriod],
+    target_periods: &[TimePeriod],
+) -> RainImpactSummary {
+    let mut summary = RainImpactSummary::default();
+
+    if target_periods.is_empty() {
+        return summary;
+    }
+
+    for impact_period in rain_periods
+        .iter()
+        .flat_map(|period| period.impact_periods.iter())
+    {
+        if !target_periods.iter().any(|target| {
+            time_ranges_overlap(
+                &impact_period.start_display,
+                &impact_period.end_display,
+                &target.start_display,
+                &target.end_display,
+            )
+        }) {
+            continue;
+        }
+
+        match impact_period.impact {
+            RainImpact::EarlyCommute | RainImpact::Commute => summary.outbound_commute = true,
+            RainImpact::Return | RainImpact::LateReturn => summary.return_commute = true,
+            RainImpact::Lunch => summary.lunch = true,
+            RainImpact::Overtime => summary.overtime = true,
+            RainImpact::LowImpact => {}
         }
     }
 
@@ -176,9 +219,24 @@ fn add_bad_weather_action(lines: &mut Vec<String>, summary: &RainImpactSummary, 
         lines.push("通勤時間帯の移動は、時間をずらせるならずらしてください".to_string());
     } else if summary.lunch {
         lines.push("昼に外へ出るなら時間をずらすのがよさそうです".to_string());
+    } else if summary.overtime {
+        lines.push("遅い時間に移動する場合は、その時間帯を避けてください".to_string());
     } else {
         lines.push("その時間帯の外出は避けてください".to_string());
     }
+}
+
+fn severe_rain_time_periods(periods: &[RainPeriod]) -> Vec<TimePeriod> {
+    periods
+        .iter()
+        .flat_map(|period| {
+            period
+                .heavy_periods
+                .iter()
+                .chain(period.thunderstorm_periods.iter())
+        })
+        .cloned()
+        .collect()
 }
 
 fn rain_periods_note(periods: &[RainPeriod]) -> String {
@@ -380,6 +438,9 @@ fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) 
     let storm_weather = has_storm_weather(forecast);
     let heavy_rain = is_heavy_rain(forecast);
     let impact_summary = rain_impact_summary(&forecast.rain_periods);
+    let severe_rain_periods = severe_rain_time_periods(&forecast.rain_periods);
+    let severe_impact_summary =
+        rain_impact_summary_for_time_periods(&forecast.rain_periods, &severe_rain_periods);
     let bad_weather = storm_weather || (!all_day_rain && heavy_rain);
     let mut lines = Vec::with_capacity(forecast.wind_periods.len() + 5);
 
@@ -388,11 +449,23 @@ fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) 
     }
 
     if bad_weather {
-        lines.push(bad_weather_header(
-            location_name,
-            &forecast.date_display,
-            all_day_rain,
-        ));
+        let use_routine_rain_header = !all_day_rain
+            && impact_summary.has_routine_impact()
+            && !severe_impact_summary.has_commute();
+        if use_routine_rain_header {
+            lines.push(routine_rain_header(
+                location_name,
+                &forecast.date_display,
+                &impact_summary,
+            ));
+            add_routine_rain_notes(&mut lines, &impact_summary);
+        } else {
+            lines.push(bad_weather_header(
+                location_name,
+                &forecast.date_display,
+                all_day_rain,
+            ));
+        }
         let mut severe_notes = Vec::new();
         if let Some(note) = heavy_rain_note(&forecast.rain_periods) {
             severe_notes.push(note);
@@ -416,8 +489,15 @@ fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) 
         } else {
             lines.extend(severe_notes);
         }
-        add_commute_umbrella_note(&mut lines, &impact_summary);
-        add_bad_weather_action(&mut lines, &impact_summary, all_day_rain);
+        if !use_routine_rain_header {
+            add_commute_umbrella_note(&mut lines, &impact_summary);
+        }
+        let action_summary = if severe_impact_summary.has_any_impact() {
+            &severe_impact_summary
+        } else {
+            &impact_summary
+        };
+        add_bad_weather_action(&mut lines, action_summary, all_day_rain);
     } else if all_day_rain {
         if heavy_rain {
             lines.push(all_day_rain_header(
@@ -704,6 +784,36 @@ mod tests {
         assert_eq!(
             msg,
             "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 08:00-10:00\n傘を持っていきましょう\n通勤時間帯の移動は、時間をずらせるならずらしてください"
+        );
+    }
+
+    #[test]
+    fn late_heavy_rain_after_return_commute_does_not_become_commute_bad_weather() {
+        let mut weather = weather(WeatherTone::Rain, true, true);
+        let mut period = rain_period("19:00", "24:00", RainImpact::Return);
+        period.impact_periods = vec![
+            RainImpactPeriod {
+                start_display: "19:00".to_string(),
+                end_display: "21:00".to_string(),
+                impact: RainImpact::Return,
+            },
+            RainImpactPeriod {
+                start_display: "21:00".to_string(),
+                end_display: "24:00".to_string(),
+                impact: RainImpact::Overtime,
+            },
+        ];
+        period.heavy_periods = vec![TimePeriod {
+            start_display: "21:00".to_string(),
+            end_display: "24:00".to_string(),
+        }];
+        weather.rain_periods = vec![period];
+
+        let msg = compose_message(Some("西新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "<!here>\n本日(6/11)の西新宿は退勤時間帯に雨が降りそうです\n朝から傘を持っていくと安心です\n滝が降る時間帯: 21:00-24:00\n遅い時間に移動する場合は、その時間帯を避けてください"
         );
     }
 
