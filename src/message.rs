@@ -215,12 +215,18 @@ fn add_commute_umbrella_note(lines: &mut Vec<String>, summary: &RainImpactSummar
 fn add_bad_weather_action(lines: &mut Vec<String>, summary: &RainImpactSummary, all_day: bool) {
     if all_day {
         lines.push("できればリモートしましょう".to_string());
-    } else if summary.has_commute() {
-        lines.push("通勤時間帯の移動は、時間をずらせるならずらしてください".to_string());
+    } else if summary.outbound_commute && summary.return_commute {
+        lines.push(
+            "出勤・退勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです".to_string(),
+        );
+    } else if summary.outbound_commute {
+        lines.push("出勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです".to_string());
+    } else if summary.return_commute {
+        lines.push("退勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです".to_string());
     } else if summary.lunch {
         lines.push("昼に外へ出るなら時間をずらすのがよさそうです".to_string());
     } else if summary.overtime {
-        lines.push("遅い時間に移動する場合は、その時間帯を避けてください".to_string());
+        lines.push("残業が長引きそうなら、荒れる前に帰るのがよさそうです".to_string());
     } else {
         lines.push("その時間帯の外出は避けてください".to_string());
     }
@@ -783,7 +789,30 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 08:00-10:00\n傘を持っていきましょう\n通勤時間帯の移動は、時間をずらせるならずらしてください"
+            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 08:00-10:00\n傘を持っていきましょう\n出勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです"
+        );
+    }
+
+    #[test]
+    fn return_commute_heavy_rain_uses_return_wording() {
+        let mut weather = weather(WeatherTone::Rain, true, true);
+        let mut period = rain_period("19:00", "21:00", RainImpact::Return);
+        period.impact_periods = vec![RainImpactPeriod {
+            start_display: "19:00".to_string(),
+            end_display: "21:00".to_string(),
+            impact: RainImpact::Return,
+        }];
+        period.heavy_periods = vec![TimePeriod {
+            start_display: "19:00".to_string(),
+            end_display: "21:00".to_string(),
+        }];
+        weather.rain_periods = vec![period];
+
+        let msg = compose_message(Some("西新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 19:00-21:00\n朝から傘を持っていくと安心です\n退勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです"
         );
     }
 
@@ -813,7 +842,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は退勤時間帯に雨が降りそうです\n朝から傘を持っていくと安心です\n滝が降る時間帯: 21:00-24:00\n遅い時間に移動する場合は、その時間帯を避けてください"
+            "<!here>\n本日(6/11)の西新宿は退勤時間帯に雨が降りそうです\n朝から傘を持っていくと安心です\n滝が降る時間帯: 21:00-24:00\n残業が長引きそうなら、荒れる前に帰るのがよさそうです"
         );
     }
 
@@ -831,7 +860,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)は悪天候の時間帯があります\n雷雨: 08:00-09:00\n傘を持っていきましょう\n通勤時間帯の移動は、時間をずらせるならずらしてください"
+            "<!here>\n本日(6/11)は悪天候の時間帯があります\n雷雨: 08:00-09:00\n傘を持っていきましょう\n出勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです"
         );
     }
 
