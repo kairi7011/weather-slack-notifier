@@ -55,181 +55,88 @@ fn message_prefix(location_name: Option<&str>, date_display: &str) -> String {
     }
 }
 
-fn rainy_header(location_name: Option<&str>, date_display: &str) -> String {
-    match location_name {
-        Some(name) => format!("本日({})の{}は雨の時間帯があります", date_display, name),
-        None => format!("本日({})は雨の時間帯があります", date_display),
-    }
-}
-
-fn all_day_rain_header(location_name: Option<&str>, date_display: &str, heavy: bool) -> String {
-    let suffix = if heavy {
-        "一日滝が降る予報です"
-    } else {
-        "一日雨の予報です"
-    };
-    match location_name {
-        Some(name) => format!("本日({date_display})の{name}は{suffix}"),
-        None => format!("本日({date_display})は{suffix}"),
-    }
-}
-
-fn bad_weather_header(location_name: Option<&str>, date_display: &str, all_day: bool) -> String {
-    let suffix = if all_day {
-        "一日悪天候です"
-    } else {
-        "悪天候の時間帯があります"
-    };
-    match location_name {
-        Some(name) => format!("本日({date_display})の{name}は{suffix}"),
-        None => format!("本日({date_display})は{suffix}"),
-    }
-}
-
+/// Which routine time windows the rain hits.
+///
+/// `early_commute` (the first hour of the commute window) is kept separate
+/// from `commute` on purpose: rain that ends within that first hour misses
+/// most departures, so it must not trigger commute alerts or a mention.
 #[derive(Debug, Default)]
-struct RainImpactSummary {
-    outbound_commute: bool,
-    return_commute: bool,
+struct ImpactBuckets {
+    early_commute: bool,
+    commute: bool,
     lunch: bool,
+    return_commute: bool,
     overtime: bool,
+    /// A severe period that overlaps none of the classified windows
+    /// (e.g. storm wind at midday without rain).
+    unclassified: bool,
 }
 
-impl RainImpactSummary {
-    fn has_commute(&self) -> bool {
-        self.outbound_commute || self.return_commute
-    }
-
-    fn has_routine_impact(&self) -> bool {
-        self.has_commute() || self.lunch
-    }
-
-    fn has_any_impact(&self) -> bool {
-        self.has_routine_impact() || self.overtime
+impl ImpactBuckets {
+    fn hits_commute(&self) -> bool {
+        self.commute || self.return_commute
     }
 }
 
-fn rain_impact_summary(periods: &[RainPeriod]) -> RainImpactSummary {
-    let mut summary = RainImpactSummary::default();
+fn record_impact(buckets: &mut ImpactBuckets, impact: RainImpact) {
+    match impact {
+        RainImpact::EarlyCommute => buckets.early_commute = true,
+        RainImpact::Commute => buckets.commute = true,
+        RainImpact::Lunch => buckets.lunch = true,
+        RainImpact::Return | RainImpact::LateReturn => buckets.return_commute = true,
+        RainImpact::Overtime => buckets.overtime = true,
+        RainImpact::LowImpact => {}
+    }
+}
 
+fn rain_impact_buckets(periods: &[RainPeriod]) -> ImpactBuckets {
+    let mut buckets = ImpactBuckets::default();
     for impact_period in periods
         .iter()
         .flat_map(|period| period.impact_periods.iter())
     {
-        match impact_period.impact {
-            RainImpact::EarlyCommute | RainImpact::Commute => summary.outbound_commute = true,
-            RainImpact::Return | RainImpact::LateReturn => summary.return_commute = true,
-            RainImpact::Lunch => summary.lunch = true,
-            RainImpact::Overtime => summary.overtime = true,
-            RainImpact::LowImpact => {}
-        }
+        record_impact(&mut buckets, impact_period.impact);
     }
-
-    summary
+    buckets
 }
 
-fn rain_impact_summary_for_time_periods(
+fn severe_impact_buckets(
     rain_periods: &[RainPeriod],
-    target_periods: &[TimePeriod],
-) -> RainImpactSummary {
-    let mut summary = RainImpactSummary::default();
+    severe_periods: &[TimePeriod],
+) -> ImpactBuckets {
+    let mut buckets = ImpactBuckets::default();
 
-    if target_periods.is_empty() {
-        return summary;
-    }
-
-    for impact_period in rain_periods
-        .iter()
-        .flat_map(|period| period.impact_periods.iter())
-    {
-        if !target_periods.iter().any(|target| {
-            time_ranges_overlap(
+    for severe in severe_periods {
+        let mut classified = false;
+        for impact_period in rain_periods
+            .iter()
+            .flat_map(|period| period.impact_periods.iter())
+        {
+            if time_ranges_overlap(
+                &severe.start_display,
+                &severe.end_display,
                 &impact_period.start_display,
                 &impact_period.end_display,
-                &target.start_display,
-                &target.end_display,
-            )
-        }) {
-            continue;
+            ) {
+                record_impact(&mut buckets, impact_period.impact);
+                classified = true;
+            }
         }
-
-        match impact_period.impact {
-            RainImpact::EarlyCommute | RainImpact::Commute => summary.outbound_commute = true,
-            RainImpact::Return | RainImpact::LateReturn => summary.return_commute = true,
-            RainImpact::Lunch => summary.lunch = true,
-            RainImpact::Overtime => summary.overtime = true,
-            RainImpact::LowImpact => {}
+        if !classified {
+            buckets.unclassified = true;
         }
     }
 
-    summary
+    buckets
 }
 
-fn routine_rain_header(
-    location_name: Option<&str>,
-    date_display: &str,
-    summary: &RainImpactSummary,
-) -> String {
-    let subject = if summary.outbound_commute && summary.return_commute {
-        "出勤・退勤時間帯に雨が降りそうです"
-    } else if summary.outbound_commute {
-        "出勤時間帯に雨が降りそうです"
-    } else if summary.return_commute {
-        "退勤時間帯に雨が降りそうです"
-    } else if summary.lunch {
-        "昼に雨が降りそうです"
-    } else {
-        "雨の時間帯があります"
-    };
-
-    match location_name {
-        Some(name) => format!("本日({date_display})の{name}は{subject}"),
-        None => format!("本日({date_display})は{subject}"),
-    }
-}
-
-fn add_routine_rain_notes(lines: &mut Vec<String>, summary: &RainImpactSummary) {
-    if summary.outbound_commute && summary.return_commute {
-        lines.push("出勤・退勤で傘が必要です".to_string());
-    } else if summary.outbound_commute {
-        lines.push("傘を持っていきましょう".to_string());
-        lines.push("退勤時間帯は止む見込みです".to_string());
-    } else if summary.return_commute {
-        lines.push("朝から傘を持っていくと安心です".to_string());
-    }
-
-    if summary.lunch {
-        lines.push("昼に外へ出るなら雨に当たりそうです".to_string());
-    }
-}
-
-fn add_commute_umbrella_note(lines: &mut Vec<String>, summary: &RainImpactSummary) {
-    if summary.outbound_commute && summary.return_commute {
-        lines.push("出勤・退勤で傘が必要です".to_string());
-    } else if summary.outbound_commute {
-        lines.push("傘を持っていきましょう".to_string());
-    } else if summary.return_commute {
-        lines.push("朝から傘を持っていくと安心です".to_string());
-    }
-}
-
-fn add_bad_weather_action(lines: &mut Vec<String>, summary: &RainImpactSummary, all_day: bool) {
-    if all_day {
-        lines.push("できればリモートしましょう".to_string());
-    } else if summary.outbound_commute && summary.return_commute {
-        lines.push(
-            "出勤・退勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです".to_string(),
-        );
-    } else if summary.outbound_commute {
-        lines.push("出勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです".to_string());
-    } else if summary.return_commute {
-        lines.push("退勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです".to_string());
-    } else if summary.lunch {
-        lines.push("昼に外へ出るなら時間をずらすのがよさそうです".to_string());
-    } else if summary.overtime {
-        lines.push("残業が長引きそうなら、荒れる前に帰るのがよさそうです".to_string());
-    } else {
-        lines.push("その時間帯の外出は避けてください".to_string());
-    }
+fn lunch_ranges(periods: &[RainPeriod]) -> Vec<String> {
+    periods
+        .iter()
+        .flat_map(|period| period.impact_periods.iter())
+        .filter(|impact_period| impact_period.impact == RainImpact::Lunch)
+        .map(|impact_period| impact_period.time_display())
+        .collect()
 }
 
 fn severe_rain_time_periods(periods: &[RainPeriod]) -> Vec<TimePeriod> {
@@ -245,34 +152,16 @@ fn severe_rain_time_periods(periods: &[RainPeriod]) -> Vec<TimePeriod> {
         .collect()
 }
 
-fn rain_periods_note(periods: &[RainPeriod]) -> String {
+fn rain_times_line(periods: &[RainPeriod], low_impact: bool) -> String {
     let ranges = periods
         .iter()
-        .map(format_rain_period)
+        .map(RainPeriod::time_display)
         .collect::<Vec<_>>()
         .join(", ");
-    format!("雨の時間帯: {ranges}")
-}
-
-fn format_rain_period(period: &RainPeriod) -> String {
-    let mut details = Vec::new();
-    if !period.heavy_periods.is_empty() {
-        details.push(format!(
-            "滝が降る雨: {}",
-            format_time_periods(&period.heavy_periods)
-        ));
-    }
-    if !period.thunderstorm_periods.is_empty() {
-        details.push(format!(
-            "雷雨: {}",
-            format_time_periods(&period.thunderstorm_periods)
-        ));
-    }
-
-    if details.is_empty() {
-        period.time_display()
+    if low_impact {
+        format!("雨の時間帯: {ranges}（外出予定がなければ影響は小さめです）")
     } else {
-        format!("{}（{}）", period.time_display(), details.join("、"))
+        format!("雨の時間帯: {ranges}")
     }
 }
 
@@ -346,17 +235,6 @@ fn thunderstorm_note(periods: &[RainPeriod]) -> Option<String> {
     } else {
         Some(format!("雷雨: {}", ranges.join(", ")))
     }
-}
-
-fn has_storm_weather(forecast: &TodayWeather) -> bool {
-    forecast
-        .rain_periods
-        .iter()
-        .any(|period| !period.thunderstorm_periods.is_empty())
-        || forecast
-            .wind_periods
-            .iter()
-            .any(|period| !period.storm_periods.is_empty())
 }
 
 fn is_heavy_rain(forecast: &TodayWeather) -> bool {
@@ -439,117 +317,164 @@ fn period_is_fully_covered(periods: &[TimePeriod], start_display: &str, end_disp
         && periods[0].end_display == end_display
 }
 
-fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) -> String {
-    let all_day_rain = is_all_day_rain(&forecast.rain_periods);
-    let storm_weather = has_storm_weather(forecast);
-    let heavy_rain = is_heavy_rain(forecast);
-    let impact_summary = rain_impact_summary(&forecast.rain_periods);
-    let severe_rain_periods = severe_rain_time_periods(&forecast.rain_periods);
-    let severe_impact_summary =
-        rain_impact_summary_for_time_periods(&forecast.rain_periods, &severe_rain_periods);
-    let bad_weather = storm_weather || (!all_day_rain && heavy_rain);
-    let mut lines = Vec::with_capacity(forecast.wind_periods.len() + 5);
+fn rain_header_subject(
+    all_day: bool,
+    heavy: bool,
+    has_severe: bool,
+    buckets: &ImpactBuckets,
+    severe_buckets: &ImpactBuckets,
+) -> &'static str {
+    if all_day {
+        if heavy {
+            "一日滝が降る予報です"
+        } else {
+            "一日雨の予報です"
+        }
+    } else if buckets.commute && buckets.return_commute {
+        "出勤・退勤時間帯に雨が降りそうです"
+    } else if buckets.commute {
+        "出勤時間帯に雨が降りそうです"
+    } else if buckets.return_commute {
+        "退勤時間帯に雨が降りそうです"
+    } else if severe_buckets.overtime {
+        "退勤後の夜に激しい雨が降りそうです"
+    } else if buckets.lunch {
+        "昼に雨が降りそうです"
+    } else if buckets.early_commute {
+        "朝早くに雨が降りそうです"
+    } else if has_severe {
+        "悪天候の時間帯があります"
+    } else {
+        "雨の時間帯があります"
+    }
+}
 
-    if bad_weather || all_day_rain || heavy_rain || impact_summary.has_commute() {
+fn add_umbrella_advice(lines: &mut Vec<String>, all_day: bool, buckets: &ImpactBuckets) {
+    if all_day || (buckets.commute && buckets.return_commute) {
+        lines.push("出勤・退勤とも傘が必要です".to_string());
+    } else if buckets.commute {
+        lines.push("傘を持っていきましょう".to_string());
+        if !buckets.return_commute && !buckets.overtime {
+            lines.push("退勤時間帯は止む見込みです".to_string());
+        }
+    } else if buckets.return_commute {
+        lines.push("帰りに降る見込みです。朝から傘を持っていきましょう".to_string());
+    } else if buckets.early_commute {
+        lines.push("出勤時間帯には止む見込みです（早く出るなら傘を）".to_string());
+    }
+}
+
+fn add_severe_advice(
+    lines: &mut Vec<String>,
+    all_day: bool,
+    buckets: &ImpactBuckets,
+    severe_buckets: &ImpactBuckets,
+) {
+    if all_day || (severe_buckets.commute && severe_buckets.return_commute) {
+        lines.push("できればリモートしましょう".to_string());
+    } else if severe_buckets.commute {
+        lines.push("出勤は荒れる時間帯を避けるのがよさそうです".to_string());
+    } else if severe_buckets.return_commute {
+        lines.push("退勤は荒れる時間帯を避けるのがよさそうです".to_string());
+    } else if severe_buckets.overtime {
+        lines.push("荒れるのは退勤後です。残業せず早めに帰りましょう".to_string());
+    } else if severe_buckets.lunch {
+        lines.push("昼の外出は避けるのがよさそうです".to_string());
+    } else if severe_buckets.unclassified {
+        lines.push("その時間帯の外出は避けてください".to_string());
+    } else if severe_buckets.early_commute && !buckets.early_commute {
+        lines.push("出勤時間帯には収まる見込みです".to_string());
+    }
+}
+
+fn compose_wind_only_message(location_name: Option<&str>, forecast: &TodayWeather) -> String {
+    let storm_notes = storm_wind_notes(&forecast.wind_periods, &forecast.rain_periods);
+    let prefix = message_prefix(location_name, &forecast.date_display);
+    let mut lines = Vec::new();
+
+    if storm_notes.is_empty() {
+        lines.push(format!("{prefix}風が強い予報です"));
+        lines.extend(forecast.wind_periods.iter().map(wind_period_note));
+    } else {
+        lines.push(HERE_MENTION.to_string());
+        lines.push(format!("{prefix}悪天候の時間帯があります"));
+        lines.extend(storm_notes);
+        lines.push("その時間帯の外出は避けてください".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) -> String {
+    if forecast.rain_periods.is_empty() {
+        return compose_wind_only_message(location_name, forecast);
+    }
+
+    let all_day = is_all_day_rain(&forecast.rain_periods);
+    let heavy = is_heavy_rain(forecast);
+    let buckets = rain_impact_buckets(&forecast.rain_periods);
+
+    let mut severe_periods = severe_rain_time_periods(&forecast.rain_periods);
+    severe_periods.extend(
+        forecast
+            .wind_periods
+            .iter()
+            .flat_map(|period| period.storm_periods.iter())
+            .cloned(),
+    );
+    let severe_buckets = severe_impact_buckets(&forecast.rain_periods, &severe_periods);
+    let has_severe = !severe_periods.is_empty();
+
+    let mention = all_day
+        || buckets.hits_commute()
+        || severe_buckets.hits_commute()
+        || severe_buckets.lunch
+        || severe_buckets.overtime
+        || severe_buckets.unclassified;
+
+    let mut lines = Vec::new();
+    if mention {
         lines.push(HERE_MENTION.to_string());
     }
 
-    if bad_weather {
-        let use_routine_rain_header = !all_day_rain
-            && impact_summary.has_routine_impact()
-            && !severe_impact_summary.has_commute();
-        if use_routine_rain_header {
-            lines.push(routine_rain_header(
-                location_name,
-                &forecast.date_display,
-                &impact_summary,
-            ));
-            add_routine_rain_notes(&mut lines, &impact_summary);
-        } else {
-            lines.push(bad_weather_header(
-                location_name,
-                &forecast.date_display,
-                all_day_rain,
-            ));
-        }
-        let mut severe_notes = Vec::new();
-        if let Some(note) = heavy_rain_note(&forecast.rain_periods) {
-            severe_notes.push(note);
-        }
-        if let Some(note) = thunderstorm_note(&forecast.rain_periods) {
-            severe_notes.push(note);
-        }
-        severe_notes.extend(storm_wind_notes(
-            &forecast.wind_periods,
-            &forecast.rain_periods,
-        ));
-        if all_day_rain {
-            let kinds = severe_notes
-                .iter()
-                .map(|note| note.split(':').next().unwrap_or(note))
-                .collect::<Vec<_>>()
-                .join("、");
-            if !kinds.is_empty() {
-                lines.push(format!("{kinds}の予報が出ています"));
-            }
-        } else {
-            lines.extend(severe_notes);
-        }
-        if !use_routine_rain_header {
-            add_commute_umbrella_note(&mut lines, &impact_summary);
-        }
-        let action_summary = if severe_impact_summary.has_any_impact() {
-            &severe_impact_summary
-        } else {
-            &impact_summary
-        };
-        add_bad_weather_action(&mut lines, action_summary, all_day_rain);
-    } else if all_day_rain {
-        if heavy_rain {
-            lines.push(all_day_rain_header(
-                location_name,
-                &forecast.date_display,
-                true,
-            ));
-            lines.push("出勤・退勤で傘が必要です".to_string());
-            lines.push("できればリモートしましょう".to_string());
-        } else {
-            lines.push(all_day_rain_header(
-                location_name,
-                &forecast.date_display,
-                false,
-            ));
-            lines.push("傘を持っていきましょう".to_string());
-        }
-    } else if !forecast.rain_periods.is_empty() {
-        if impact_summary.has_routine_impact() {
-            lines.push(routine_rain_header(
-                location_name,
-                &forecast.date_display,
-                &impact_summary,
-            ));
-            add_routine_rain_notes(&mut lines, &impact_summary);
-        } else {
-            lines.push(rainy_header(location_name, &forecast.date_display));
-            lines.push(format!(
-                "{}（外出予定がなければ影響は小さめです）",
-                rain_periods_note(&forecast.rain_periods)
-            ));
-        }
-    } else if !forecast.wind_periods.is_empty() {
-        match location_name {
-            Some(name) => lines.push(format!(
-                "本日({})の{}は風が強い予報です",
-                forecast.date_display, name
-            )),
-            None => lines.push(format!("本日({})は風が強い予報です", forecast.date_display)),
-        }
+    lines.push(format!(
+        "{}{}",
+        message_prefix(location_name, &forecast.date_display),
+        rain_header_subject(all_day, heavy, has_severe, &buckets, &severe_buckets)
+    ));
+
+    let low_impact = !all_day
+        && !has_severe
+        && !buckets.hits_commute()
+        && !buckets.early_commute
+        && !buckets.lunch
+        && !buckets.overtime;
+    lines.push(rain_times_line(&forecast.rain_periods, low_impact));
+
+    if let Some(note) = heavy_rain_note(&forecast.rain_periods) {
+        lines.push(note);
+    }
+    if let Some(note) = thunderstorm_note(&forecast.rain_periods) {
+        lines.push(note);
+    }
+    lines.extend(storm_wind_notes(
+        &forecast.wind_periods,
+        &forecast.rain_periods,
+    ));
+
+    add_umbrella_advice(&mut lines, all_day, &buckets);
+
+    if !all_day && buckets.lunch && !(buckets.commute && buckets.return_commute) {
+        let ranges = lunch_ranges(&forecast.rain_periods).join(", ");
+        lines.push(format!("昼({ranges})に外へ出るなら傘があると安心です"));
     }
 
-    if !bad_weather && !forecast.wind_periods.is_empty() {
-        if !forecast.rain_periods.is_empty() {
-            lines.push("風の注意:".to_string());
-        }
+    if has_severe {
+        add_severe_advice(&mut lines, all_day, &buckets, &severe_buckets);
+    }
+
+    if !has_severe && !forecast.wind_periods.is_empty() {
+        lines.push("風の注意:".to_string());
         lines.extend(forecast.wind_periods.iter().map(wind_period_note));
     }
 
@@ -656,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn all_day_rain_summarizes_without_impact_windows() {
+    fn all_day_rain_shows_time_range_and_skips_redundant_lunch_note() {
         let mut weather = weather(WeatherTone::Rain, false, false);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.impact_periods = vec![
@@ -687,7 +612,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)は一日雨の予報です\n傘を持っていきましょう"
+            "<!here>\n本日(6/11)は一日雨の予報です\n雨の時間帯: 01:00-24:00\n出勤・退勤とも傘が必要です"
         );
     }
 
@@ -702,12 +627,12 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は一日雨の予報です\n傘を持っていきましょう"
+            "<!here>\n本日(6/11)の西新宿は一日雨の予報です\n雨の時間帯: 01:00-24:00\n出勤・退勤とも傘が必要です"
         );
     }
 
     #[test]
-    fn all_day_heavy_rain_uses_direct_heavy_rain_summary() {
+    fn all_day_heavy_rain_shows_heavy_time_range_and_recommends_remote() {
         let mut weather = weather(WeatherTone::Rain, true, true);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.heavy_periods = vec![TimePeriod {
@@ -720,7 +645,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は一日滝が降る予報です\n出勤・退勤で傘が必要です\nできればリモートしましょう"
+            "<!here>\n本日(6/11)の西新宿は一日滝が降る予報です\n雨の時間帯: 01:00-24:00\n滝が降る時間帯: 08:00-12:00\n出勤・退勤とも傘が必要です\nできればリモートしましょう"
         );
     }
 
@@ -738,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn outbound_commute_rain_needs_umbrella_but_not_return_commute_warning() {
+    fn outbound_commute_rain_shows_times_and_lunch_range() {
         let mut weather = weather(WeatherTone::Rain, false, false);
         weather.rain_periods = vec![rain_period("00:00", "18:00", RainImpact::Commute)];
         weather.rain_periods[0].impact_periods = vec![
@@ -758,7 +683,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は出勤時間帯に雨が降りそうです\n傘を持っていきましょう\n退勤時間帯は止む見込みです\n昼に外へ出るなら雨に当たりそうです"
+            "<!here>\n本日(6/11)の西新宿は出勤時間帯に雨が降りそうです\n雨の時間帯: 00:00-18:00\n傘を持っていきましょう\n退勤時間帯は止む見込みです\n昼(12:00-14:00)に外へ出るなら傘があると安心です"
         );
     }
 
@@ -771,12 +696,12 @@ mod tests {
 
         assert_eq!(
             msg,
-            "本日(6/11)の西新宿は昼に雨が降りそうです\n昼に外へ出るなら雨に当たりそうです"
+            "本日(6/11)の西新宿は昼に雨が降りそうです\n雨の時間帯: 12:00-13:00\n昼(12:00-13:00)に外へ出るなら傘があると安心です"
         );
     }
 
     #[test]
-    fn partial_heavy_rain_is_not_nested_inside_plain_rain_range() {
+    fn commute_heavy_rain_shows_times_and_avoidance_advice() {
         let mut weather = weather(WeatherTone::Rain, true, true);
         let mut period = rain_period("08:00", "10:00", RainImpact::Commute);
         period.heavy_periods = vec![TimePeriod {
@@ -789,7 +714,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 08:00-10:00\n傘を持っていきましょう\n出勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです"
+            "<!here>\n本日(6/11)の西新宿は出勤時間帯に雨が降りそうです\n雨の時間帯: 08:00-10:00\n滝が降る時間帯: 08:00-10:00\n傘を持っていきましょう\n退勤時間帯は止む見込みです\n出勤は荒れる時間帯を避けるのがよさそうです"
         );
     }
 
@@ -812,12 +737,12 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n滝が降る時間帯: 19:00-21:00\n朝から傘を持っていくと安心です\n退勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです"
+            "<!here>\n本日(6/11)の西新宿は退勤時間帯に雨が降りそうです\n雨の時間帯: 19:00-21:00\n滝が降る時間帯: 19:00-21:00\n帰りに降る見込みです。朝から傘を持っていきましょう\n退勤は荒れる時間帯を避けるのがよさそうです"
         );
     }
 
     #[test]
-    fn late_heavy_rain_after_return_commute_does_not_become_commute_bad_weather() {
+    fn heavy_rain_after_return_window_advises_leaving_on_time() {
         let mut weather = weather(WeatherTone::Rain, true, true);
         let mut period = rain_period("19:00", "24:00", RainImpact::Return);
         period.impact_periods = vec![
@@ -842,12 +767,53 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は退勤時間帯に雨が降りそうです\n朝から傘を持っていくと安心です\n滝が降る時間帯: 21:00-24:00\n残業が長引きそうなら、荒れる前に帰るのがよさそうです"
+            "<!here>\n本日(6/11)の西新宿は退勤時間帯に雨が降りそうです\n雨の時間帯: 19:00-24:00\n滝が降る時間帯: 21:00-24:00\n帰りに降る見込みです。朝から傘を持っていきましょう\n荒れるのは退勤後です。残業せず早めに帰りましょう"
         );
     }
 
     #[test]
-    fn rain_periods_include_thunderstorm_inside_the_period_note() {
+    fn overtime_only_heavy_rain_advises_leaving_early_without_commute_alert() {
+        let mut weather = weather(WeatherTone::Rain, true, true);
+        let mut period = rain_period("21:00", "24:00", RainImpact::Overtime);
+        period.heavy_periods = vec![TimePeriod {
+            start_display: "21:00".to_string(),
+            end_display: "24:00".to_string(),
+        }];
+        weather.rain_periods = vec![period];
+
+        let msg = compose_message(Some("西新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "<!here>\n本日(6/11)の西新宿は退勤後の夜に激しい雨が降りそうです\n雨の時間帯: 21:00-24:00\n滝が降る時間帯: 21:00-24:00\n荒れるのは退勤後です。残業せず早めに帰りましょう"
+        );
+    }
+
+    #[test]
+    fn heavy_rain_ending_in_early_commute_hour_does_not_mention_here() {
+        let mut weather = weather(WeatherTone::Rain, true, true);
+        let mut period = rain_period("03:00", "08:00", RainImpact::LowImpact);
+        period.impact_periods = vec![RainImpactPeriod {
+            start_display: "07:00".to_string(),
+            end_display: "08:00".to_string(),
+            impact: RainImpact::EarlyCommute,
+        }];
+        period.heavy_periods = vec![TimePeriod {
+            start_display: "03:00".to_string(),
+            end_display: "08:00".to_string(),
+        }];
+        weather.rain_periods = vec![period];
+
+        let msg = compose_message(Some("西新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "本日(6/11)の西新宿は朝早くに雨が降りそうです\n雨の時間帯: 03:00-08:00\n滝が降る時間帯: 03:00-08:00\n出勤時間帯には止む見込みです（早く出るなら傘を）"
+        );
+    }
+
+    #[test]
+    fn early_commute_thunderstorm_shows_times_without_mention() {
         let mut weather = weather(WeatherTone::Rain, true, false);
         let mut period = rain_period("08:00", "09:00", RainImpact::EarlyCommute);
         period.thunderstorm_periods = vec![TimePeriod {
@@ -860,12 +826,12 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)は悪天候の時間帯があります\n雷雨: 08:00-09:00\n傘を持っていきましょう\n出勤の時間をずらせるなら、荒れる時間帯を避けるのがよさそうです"
+            "本日(6/11)は朝早くに雨が降りそうです\n雨の時間帯: 08:00-09:00\n雷雨: 08:00-09:00\n出勤時間帯には止む見込みです（早く出るなら傘を）"
         );
     }
 
     #[test]
-    fn all_day_bad_weather_summarizes_to_weather_type_without_time_ranges() {
+    fn all_day_bad_weather_lists_severe_time_ranges() {
         let mut weather = weather(WeatherTone::Rain, true, false);
         let mut period = rain_period("01:00", "24:00", RainImpact::LowImpact);
         period.thunderstorm_periods = vec![TimePeriod {
@@ -887,7 +853,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は一日悪天候です\n雷雨、暴風雨の予報が出ています\nできればリモートしましょう"
+            "<!here>\n本日(6/11)の西新宿は一日雨の予報です\n雨の時間帯: 01:00-24:00\n雷雨: 08:00-09:00\n暴風雨: 11:00-12:00\n出勤・退勤とも傘が必要です\nできればリモートしましょう"
         );
     }
 
@@ -913,7 +879,25 @@ mod tests {
     }
 
     #[test]
-    fn storm_wind_does_not_recommend_remote_when_it_can_be_avoided_by_time() {
+    fn strong_wind_without_storm_is_reported_without_mention() {
+        let mut weather = weather(WeatherTone::Cloudy, false, false);
+        weather.wind_periods = vec![WindPeriod {
+            start_display: "09:00".to_string(),
+            end_display: "13:00".to_string(),
+            max_gust_kmh: 60,
+            storm_periods: Vec::new(),
+        }];
+
+        let msg = compose_message(Some("新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "本日(6/11)の新宿は風が強い予報です\n09:00-13:00: 強風に注意してください（最大60km/h）"
+        );
+    }
+
+    #[test]
+    fn storm_wind_outside_rain_impact_warns_without_commute_advice() {
         let mut weather = weather(WeatherTone::Rain, true, false);
         weather.rain_periods = vec![rain_period("16:00", "17:00", RainImpact::LowImpact)];
         weather.wind_periods = vec![WindPeriod {
@@ -930,7 +914,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n暴風: 09:00-10:00\nその時間帯の外出は避けてください"
+            "<!here>\n本日(6/11)の西新宿は悪天候の時間帯があります\n雨の時間帯: 16:00-17:00\n暴風: 09:00-10:00\nその時間帯の外出は避けてください"
         );
     }
 }

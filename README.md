@@ -7,15 +7,21 @@ A small GitHub Actions job in Rust, scheduled at 04:30 (Asia/Tokyo), that posts 
 - rain -> `<!here> 雨の時間帯があります`
 - heavy rain -> `<!here> 滝が降ります、傘を持っていきましょう。できればリモートしましょう`
 
-When hourly forecast data is available, the message is optimized around routine
-movement: commute rain first, lunch rain second, and low-impact rain last.
-Contained time bands are collapsed instead of listing every hour separately:
+When hourly forecast data is available, the message is built around commute
+impact and always includes the concrete rain time ranges:
 
-- all-day rain -> `本日(6/25)の西新宿は一日雨の予報です`
-- all-day heavy rain -> `本日(6/25)の西新宿は一日滝が降る予報です`
-- all-day stormy weather -> `本日(6/25)の西新宿は一日悪天候です` + `雷雨、暴風雨の予報が出ています`
-- commute rain -> `本日(6/25)の西新宿は出勤時間帯に雨が降りそうです` + `傘を持っていきましょう`
-- lunch rain -> `本日(6/25)の西新宿は昼に雨が降りそうです` + `昼に外へ出るなら雨に当たりそうです`
+- every rainy message includes `雨の時間帯: HH:MM-HH:MM` so readers know when it rains
+- `<!here>` is used only when rain or severe weather actually hits the commute,
+  return-commute, lunch, or after-work windows — rain that ends within the first
+  hour of the commute buffer (before most departures) does not mention
+- all-day rain -> `一日雨の予報です` + `雨の時間帯: 01:00-24:00` + `出勤・退勤とも傘が必要です`
+  (no redundant per-window lines when it rains all day)
+- all-day heavy rain -> `一日滝が降る予報です` + `できればリモートしましょう`
+- commute rain -> `出勤時間帯に雨が降りそうです` + `傘を持っていきましょう` (+ `退勤時間帯は止む見込みです` when it clears)
+- return rain -> `退勤時間帯に雨が降りそうです` + `帰りに降る見込みです。朝から傘を持っていきましょう`
+- lunch rain -> `昼に雨が降りそうです` + `昼(12:00-13:00)に外へ出るなら傘があると安心です`
+- heavy rain only after the return window -> `退勤後の夜に激しい雨が降りそうです` + `荒れるのは退勤後です。残業せず早めに帰りましょう`
+- rain ending before most departures -> `朝早くに雨が降りそうです` + `出勤時間帯には止む見込みです（早く出るなら傘を）` (no `<!here>`)
 - low-impact rain -> `雨の時間帯: 16:00-17:00（外出予定がなければ影響は小さめです）`
 
 Open-Meteo does not identify named typhoons or official warnings in this
