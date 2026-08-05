@@ -54,6 +54,31 @@ pub struct TodayWeather {
     pub has_heavy_rain: bool,
     pub rain_periods: Vec<RainPeriod>,
     pub wind_periods: Vec<WindPeriod>,
+    pub rain_chart: Option<RainChart>,
+}
+
+/// Hourly precipitation-probability profile for today, used to draw a
+/// text sparkline in the Slack message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RainChart {
+    /// Probability (0-100) per hour slot, index 0 = 00:00-01:00.
+    pub hourly_probabilities: Vec<u8>,
+    pub max_probability: u8,
+    /// Start hour (0-23) of the slot with the highest probability.
+    pub max_hour: u8,
+    /// Precipitation of that slot in tenths of a millimetre
+    /// (kept as an integer so the struct stays `Eq`).
+    pub max_hour_precipitation_tenths_mm: u32,
+}
+
+impl RainChart {
+    pub fn max_hour_precipitation_display(&self) -> String {
+        format!(
+            "{}.{}",
+            self.max_hour_precipitation_tenths_mm / 10,
+            self.max_hour_precipitation_tenths_mm % 10
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -589,6 +614,8 @@ fn parse_hourly_forecast_for_today(
     let mut codes = Vec::new();
     let mut slots = Vec::new();
     let mut wind_slots = Vec::new();
+    let mut hourly_probabilities = vec![0u8; 24];
+    let mut hourly_precipitation_tenths = vec![0u32; 24];
 
     for (idx, raw_time) in hourly.time.iter().enumerate() {
         let slot_end = parse_open_meteo_hour(raw_time)?;
@@ -614,6 +641,10 @@ fn parse_hourly_forecast_for_today(
             .and_then(|value| *value)
             .unwrap_or(0.0);
         codes.push(code);
+
+        let slot_hour = slot_start.time().hour() as usize;
+        hourly_probabilities[slot_hour] = precipitation_probability.clamp(0.0, 100.0).round() as u8;
+        hourly_precipitation_tenths[slot_hour] = (precipitation.max(0.0) * 10.0).round() as u32;
 
         if is_rain_hour(code, precipitation, precipitation_probability) {
             let is_heavy = precipitation >= 12.0 || is_significant_rain_code(code);
@@ -655,6 +686,8 @@ fn parse_hourly_forecast_for_today(
             .iter()
             .any(|period| !period.storm_periods.is_empty());
 
+    let rain_chart = build_rain_chart(&hourly_probabilities, &hourly_precipitation_tenths);
+
     Ok(TodayWeather {
         date_display: date_display.to_string(),
         tone,
@@ -662,6 +695,33 @@ fn parse_hourly_forecast_for_today(
         has_heavy_rain,
         rain_periods,
         wind_periods,
+        rain_chart,
+    })
+}
+
+/// Picks the hour with the highest probability (breaking ties by
+/// precipitation amount). Returns `None` when every hour is dry.
+fn build_rain_chart(
+    hourly_probabilities: &[u8],
+    hourly_precipitation_tenths: &[u32],
+) -> Option<RainChart> {
+    let (max_hour, max_probability) = hourly_probabilities
+        .iter()
+        .copied()
+        .zip(hourly_precipitation_tenths.iter().copied())
+        .enumerate()
+        .max_by_key(|(_, (probability, precipitation))| (*probability, *precipitation))
+        .map(|(hour, (probability, _))| (hour, probability))?;
+
+    if max_probability == 0 {
+        return None;
+    }
+
+    Some(RainChart {
+        hourly_probabilities: hourly_probabilities.to_vec(),
+        max_probability,
+        max_hour: max_hour as u8,
+        max_hour_precipitation_tenths_mm: hourly_precipitation_tenths[max_hour],
     })
 }
 
@@ -700,6 +760,7 @@ fn parse_daily_forecast_for_today(
         has_heavy_rain,
         rain_periods: Vec::new(),
         wind_periods: Vec::new(),
+        rain_chart: None,
     })
 }
 
@@ -1181,6 +1242,62 @@ mod tests {
         assert_eq!(today.tone, WeatherTone::Sunny);
         assert!(!today.is_too_wet);
         assert!(today.rain_periods.is_empty());
+    }
+
+    #[test]
+    fn hourly_forecast_builds_rain_chart_with_max_hour() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![61],
+                precipitation_sum: vec![Some(5.0)],
+                precipitation_probability_max: vec![Some(80.0)],
+            },
+            hourly: Some(HourlyForecast {
+                time: vec![
+                    "2026-06-10T18:00".to_string(),
+                    "2026-06-10T19:00".to_string(),
+                ],
+                weather_code: vec![61, 61],
+                precipitation: vec![Some(0.5), Some(1.2)],
+                precipitation_probability: vec![Some(50.0), Some(80.0)],
+                wind_gusts_10m: vec![Some(10.0), Some(10.0)],
+            }),
+        };
+
+        let today = parse(&response).unwrap();
+
+        let chart = today.rain_chart.expect("rain chart");
+        assert_eq!(chart.max_probability, 80);
+        assert_eq!(chart.max_hour, 18);
+        assert_eq!(chart.max_hour_precipitation_tenths_mm, 12);
+        assert_eq!(chart.hourly_probabilities.len(), 24);
+        assert_eq!(chart.hourly_probabilities[17], 50);
+        assert_eq!(chart.hourly_probabilities[18], 80);
+        assert_eq!(chart.max_hour_precipitation_display(), "1.2");
+    }
+
+    #[test]
+    fn hourly_forecast_without_rain_probability_has_no_chart() {
+        let response = WeatherResponse {
+            daily: DailyForecast {
+                time: vec!["2026-06-10".to_string()],
+                weather_code: vec![1],
+                precipitation_sum: vec![Some(0.0)],
+                precipitation_probability_max: vec![Some(0.0)],
+            },
+            hourly: Some(HourlyForecast {
+                time: vec!["2026-06-10T09:00".to_string()],
+                weather_code: vec![1],
+                precipitation: vec![Some(0.0)],
+                precipitation_probability: vec![Some(0.0)],
+                wind_gusts_10m: vec![Some(10.0)],
+            }),
+        };
+
+        let today = parse(&response).unwrap();
+
+        assert!(today.rain_chart.is_none());
     }
 
     #[test]

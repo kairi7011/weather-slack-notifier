@@ -23,6 +23,9 @@ impact and always includes the concrete rain time ranges:
 - heavy rain only after the return window -> `退勤後の夜に激しい雨が降りそうです` + `荒れるのは退勤後です。残業せず早めに帰りましょう`
 - rain ending before most departures -> `朝早くに雨が降りそうです` + `出勤時間帯には止む見込みです（早く出るなら傘を）` (no `<!here>`)
 - low-impact rain -> `雨の時間帯: 16:00-17:00（外出予定がなければ影響は小さめです）`
+- every rainy message also includes an hourly probability sparkline, e.g.
+  `降水確率: ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▃▅▆▅▃▁▁▁ 最大80%（18時・1.2mm）`
+  (one block character per hour 00-23; omitted when no hour has rain probability)
 
 Open-Meteo does not identify named typhoons or official warnings in this
 forecast response. Special notes are derived from forecast variables:
