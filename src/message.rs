@@ -1,4 +1,6 @@
-use crate::weather::{RainImpact, RainPeriod, TimePeriod, TodayWeather, WeatherTone, WindPeriod};
+use crate::weather::{
+    RainChart, RainImpact, RainPeriod, TimePeriod, TodayWeather, WeatherTone, WindPeriod,
+};
 
 const HERE_MENTION: &str = "<!here>";
 
@@ -163,6 +165,32 @@ fn rain_times_line(periods: &[RainPeriod], low_impact: bool) -> String {
     } else {
         format!("雨の時間帯: {ranges}")
     }
+}
+
+const BAR_LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+fn probability_bar_char(probability: u8) -> char {
+    if probability == 0 {
+        return BAR_LEVELS[0];
+    }
+    let level = (usize::from(probability) * 7 / 100).clamp(1, 7);
+    BAR_LEVELS[level]
+}
+
+fn rain_chart_line(chart: &RainChart) -> String {
+    let bars: String = chart
+        .hourly_probabilities
+        .iter()
+        .map(|probability| probability_bar_char(*probability))
+        .collect();
+
+    format!(
+        "降水確率: {} 最大{}%（{}時・{}mm）",
+        bars,
+        chart.max_probability,
+        chart.max_hour,
+        chart.max_hour_precipitation_display()
+    )
 }
 
 fn wind_period_note(period: &WindPeriod) -> String {
@@ -451,6 +479,10 @@ fn compose_period_message(location_name: Option<&str>, forecast: &TodayWeather) 
         && !buckets.overtime;
     lines.push(rain_times_line(&forecast.rain_periods, low_impact));
 
+    if let Some(chart) = &forecast.rain_chart {
+        lines.push(rain_chart_line(chart));
+    }
+
     if let Some(note) = heavy_rain_note(&forecast.rain_periods) {
         lines.push(note);
     }
@@ -518,6 +550,7 @@ mod tests {
             has_heavy_rain,
             rain_periods: Vec::new(),
             wind_periods: Vec::new(),
+            rain_chart: None,
         }
     }
 
@@ -540,6 +573,29 @@ mod tests {
             heavy_periods: Vec::new(),
             thunderstorm_periods: Vec::new(),
         }
+    }
+
+    #[test]
+    fn rain_message_includes_probability_bar_chart() {
+        let mut weather = weather(WeatherTone::Rain, false, false);
+        weather.rain_periods = vec![rain_period("17:00", "19:00", RainImpact::LowImpact)];
+        let mut probabilities = vec![0u8; 24];
+        probabilities[16] = 30;
+        probabilities[17] = 60;
+        probabilities[18] = 80;
+        weather.rain_chart = Some(crate::weather::RainChart {
+            hourly_probabilities: probabilities,
+            max_probability: 80,
+            max_hour: 18,
+            max_hour_precipitation_tenths_mm: 12,
+        });
+
+        let msg = compose_message(Some("新宿"), &weather);
+
+        assert_eq!(
+            msg,
+            "本日(6/11)の新宿は雨の時間帯があります\n雨の時間帯: 17:00-19:00（外出予定がなければ影響は小さめです）\n降水確率: ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▃▅▆▁▁▁▁▁ 最大80%（18時・1.2mm）"
+        );
     }
 
     #[test]
