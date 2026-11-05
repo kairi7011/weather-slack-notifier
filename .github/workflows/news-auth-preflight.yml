@@ -1,0 +1,70 @@
+name: News Slack auth preflight
+on:
+  push:
+    branches: [prep/news-slack-auth-20261106]
+    paths: [.github/workflows/news-auth-preflight.yml]
+permissions: {}
+concurrency:
+  group: news-slack-auth-preflight
+  cancel-in-progress: false
+jobs:
+  authentication:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Authenticate bot without posting or revealing identity
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+          
+          
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args):
+                  return None
+          
+          
+          def probe():
+              token = os.environ.get("SLACK_BOT_TOKEN", "")
+              channel = os.environ.get("SLACK_CHANNEL_ID", "")
+              if not token.startswith("xoxb-") or not re.fullmatch(r"C[A-Z0-9]{8,}", channel):
+                  print("FAIL: expected bot credential or channel configuration is missing.")
+                  return 1
+              request = urllib.request.Request(
+                  "https://slack.com/api/auth.test", data=b"{}", method="POST",
+                  headers={"Authorization": "Bearer " + token,
+                           "Content-Type": "application/json; charset=utf-8"})
+              try:
+                  with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
+                      raw = response.read(65_537)
+                      if len(raw) > 65_536:
+                          raise ValueError()
+                      result = json.loads(raw)
+                      scopes = set(response.headers.get("x-oauth-scopes", "").split(","))
+              except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError):
+                  print("FAIL: authentication request could not be verified; response omitted.")
+                  return 1
+              if (not isinstance(result, dict) or result.get("ok") is not True
+                      or not result.get("bot_id") or not result.get("team_id") or not result.get("user_id")):
+                  print("FAIL: valid bot identity was not confirmed; response omitted.")
+                  return 1
+              if not scopes.intersection({"chat:write", "chat:write:bot"}):
+                  print("FAIL: required posting scope was not confirmed; scope list omitted.")
+                  return 1
+              print("PASS: Slack bot authentication and posting scope verified from GitHub Actions.")
+              print("PASS: target channel configuration is present; membership and delivery are untested.")
+              print("No message was sent. No history was read. Private identifiers and credentials are omitted.")
+              return 0
+          
+          
+          if __name__ == "__main__":
+              sys.exit(probe())
+          PY
