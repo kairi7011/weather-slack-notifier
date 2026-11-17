@@ -2,8 +2,10 @@ name: weather-forecast-to-slack
 
 on:
   schedule:
-    # 04:30 JST
-    - cron: "30 19 * * *"
+    # 00:07 JST. GitHub starts scheduled runs hours late, so this is set early
+    # for the post to land before the morning commute. Keep it at or after
+    # 00:00 JST: the run-time JST date decides which day is "today".
+    - cron: "7 15 * * *"
   workflow_dispatch:
 
 permissions:
